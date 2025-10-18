@@ -179,7 +179,7 @@ impl TotthoCore {
         module: T,
     ) -> Result<(), CoreError> {
         let mut registry = self.module_registry.write().await;
-        registry.register(Box::new(module))?;
+        registry.register(module)?;
         Ok(())
     }
 
@@ -191,7 +191,7 @@ impl TotthoCore {
         self.save_application_state().await?;
         
         // Shutdown modules
-        let registry = self.module_registry.read().await;
+        let mut registry = self.module_registry.write().await;
         registry.shutdown_all().await?;
         
         // Shutdown event bus

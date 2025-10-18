@@ -30,6 +30,12 @@ pub enum CoreError {
     #[error("Circular dependency detected for module '{module}'")]
     CircularDependency { module: String },
 
+    #[error("Module '{module}' has dependents: {dependents:?}")]
+    ModuleHasDependents { module: String, dependents: Vec<String> },
+
+    #[error("Module '{module}' dependency '{dependency}' is not ready")]
+    ModuleDependencyNotReady { module: String, dependency: String },
+
     /// Event bus errors
     #[error("Event bus is not running")]
     EventBusNotRunning,
