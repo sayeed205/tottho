@@ -9,8 +9,28 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::RwLock;
+use tracing_subscriber::layer::Layer;
 
-use crate::core::{ApplicationState, CoreError, EventBus, ModuleRegistry, TotthoConfig};
+/// Command line arguments for Tottho (simplified version for core module)
+#[derive(Debug, Clone)]
+pub struct Args {
+    /// Configuration file path
+    pub config_path: Option<PathBuf>,
+    /// Log level override
+    pub log_level: Option<String>,
+    /// Disable session restoration
+    pub no_restore: bool,
+    /// Show version and exit
+    pub version: bool,
+    /// Show help and exit
+    pub help: bool,
+    /// Enable debug mode
+    pub debug: bool,
+    /// Workspace to open on startup
+    pub workspace: Option<PathBuf>,
+}
+
+use crate::core::{ApplicationState, CoreError, EventBus, ModuleRegistry, TotthoConfig, WorkspaceManager};
 
 /// Application paths for configuration, data, cache, and logs
 #[derive(Debug, Clone)]
@@ -57,6 +77,7 @@ impl AppPaths {
 }
 
 /// The central application coordinator that manages all core systems
+#[derive(Clone)]
 pub struct TotthoCore {
     /// Event bus for inter-module communication
     pub event_bus: Arc<EventBus>,
@@ -66,6 +87,8 @@ pub struct TotthoCore {
     pub app_state: Arc<RwLock<ApplicationState>>,
     /// Configuration management
     pub config: Arc<RwLock<TotthoConfig>>,
+    /// Workspace manager for layout and session management
+    pub workspace_manager: Arc<WorkspaceManager>,
     /// Initialization timestamp for performance tracking
     pub init_start: Instant,
 }
@@ -81,6 +104,7 @@ impl TotthoCore {
             module_registry: Arc::new(RwLock::new(ModuleRegistry::new())),
             app_state: Arc::new(RwLock::new(ApplicationState::default())),
             config: Arc::new(RwLock::new(TotthoConfig::default())),
+            workspace_manager: Arc::new(WorkspaceManager::new()),
             init_start,
         }
     }
@@ -95,6 +119,7 @@ impl TotthoCore {
             module_registry: Arc::new(RwLock::new(ModuleRegistry::new())),
             app_state: Arc::new(RwLock::new(ApplicationState::default())),
             config: Arc::new(RwLock::new(TotthoConfig::default())),
+            workspace_manager: Arc::new(WorkspaceManager::new()),
             init_start,
         })
     }
@@ -115,6 +140,9 @@ impl TotthoCore {
 
         // Initialize module registry
         self.initialize_module_registry().await?;
+
+        // Initialize workspace manager
+        self.initialize_workspace_manager().await?;
 
         let init_duration = start_time.elapsed();
         tracing::info!(
@@ -222,6 +250,13 @@ impl TotthoCore {
     async fn initialize_module_registry(&self) -> Result<(), CoreError> {
         // TODO: Implement module registry initialization
         tracing::debug!("Module registry initialization placeholder");
+        Ok(())
+    }
+
+    async fn initialize_workspace_manager(&self) -> Result<(), CoreError> {
+        let config = self.config.read().await;
+        self.workspace_manager.initialize(&config).await?;
+        tracing::debug!("Workspace manager initialized");
         Ok(())
     }
 }
@@ -564,6 +599,144 @@ impl TotthoApp {
         }
 
         Ok(app)
+    }
+
+    /// Complete startup sequence with configuration and command line arguments
+    pub async fn startup_sequence_with_config(
+        cx: &mut App,
+        config: crate::core::TotthoConfig,
+        args: Args,
+    ) -> Result<Self, CoreError> {
+        let startup_start = Instant::now();
+        tracing::info!("Starting Tottho application startup sequence with configuration");
+
+        // Phase 1: Initialize paths (paths should already be initialized by main)
+        let paths = Self::init_paths()?;
+
+        // Phase 2: Initialize enhanced logging with configuration
+        Self::init_logging_with_config(&paths, &config.logging)?;
+
+        // Phase 3: Create GPUI application instance
+        let app = cx.new(|cx| {
+            let core = TotthoCore::new_with_gpui(cx);
+            Self { core }
+        });
+
+        // Phase 4: Log configuration application
+        tracing::info!("Configuration applied: restore_session={}, debug_mode={}", 
+            config.startup.restore_session, args.debug);
+
+        // Apply workspace restoration if enabled
+        if config.startup.restore_session && !args.no_restore {
+            tracing::info!("Restoring previous session");
+            // Note: Workspace restoration will be handled during core initialization
+        }
+
+        // Open specific workspace if provided
+        if let Some(workspace_path) = &args.workspace {
+            tracing::info!("Opening workspace: {:?}", workspace_path);
+            // Note: Workspace opening will be handled during core initialization
+        }
+
+        // Note: Async initialization will be handled by the main application loop
+        tracing::info!("Core systems will be initialized asynchronously by the main loop");
+
+        let startup_duration = startup_start.elapsed();
+        tracing::info!(
+            "Tottho application startup sequence with config completed in {:?}",
+            startup_duration
+        );
+
+        // Check if we met the 200ms target
+        if startup_duration.as_millis() > 200 {
+            tracing::warn!(
+                "Startup sequence took {:?}, exceeding 200ms target",
+                startup_duration
+            );
+        }
+
+        Ok(Self { core: app.read(cx).core.clone() })
+    }
+
+    /// Initialize logging system with configuration
+    pub fn init_logging_with_config(
+        paths: &AppPaths,
+        logging_config: &crate::core::LoggingConfig,
+    ) -> Result<(), CoreError> {
+        use std::fs::OpenOptions;
+        use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
+
+        // Set up environment filter with configuration
+        let env_filter = EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| {
+                format!("tottho={},info", logging_config.level).into()
+            });
+
+        let registry = tracing_subscriber::registry().with(env_filter);
+
+        // Configure logging based on settings
+        match (logging_config.console_logging, logging_config.log_to_file) {
+            (true, true) => {
+                // Both console and file logging
+                let log_file_path = logging_config.log_file_path
+                    .clone()
+                    .unwrap_or_else(|| paths.logs_dir.join("tottho.log"));
+
+                let file = OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&log_file_path)
+                    .map_err(|e| CoreError::InitializationFailed {
+                        reason: format!("Failed to create log file: {}", e),
+                    })?;
+
+                registry
+                    .with(fmt::layer().with_writer(std::io::stdout).with_ansi(true))
+                    .with(fmt::layer().with_writer(file).with_ansi(false))
+                    .init();
+
+                tracing::info!("Console and file logging enabled: {:?}", log_file_path);
+            }
+            (true, false) => {
+                // Console logging only
+                registry
+                    .with(fmt::layer().with_writer(std::io::stdout).with_ansi(true))
+                    .init();
+
+                tracing::info!("Console logging enabled");
+            }
+            (false, true) => {
+                // File logging only
+                let log_file_path = logging_config.log_file_path
+                    .clone()
+                    .unwrap_or_else(|| paths.logs_dir.join("tottho.log"));
+
+                let file = OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&log_file_path)
+                    .map_err(|e| CoreError::InitializationFailed {
+                        reason: format!("Failed to create log file: {}", e),
+                    })?;
+
+                registry
+                    .with(fmt::layer().with_writer(file).with_ansi(false))
+                    .init();
+
+                tracing::info!("File logging enabled: {:?}", log_file_path);
+            }
+            (false, false) => {
+                // No logging configured, use default console
+                registry
+                    .with(fmt::layer().with_writer(std::io::stdout).with_ansi(true))
+                    .init();
+
+                tracing::warn!("No logging configured, using default console logging");
+            }
+        }
+
+        tracing::info!("Enhanced logging system initialized with level: {}", logging_config.level);
+        Ok(())
     }
 
     /// Graceful shutdown for cleanup during initialization failures

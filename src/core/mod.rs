@@ -9,14 +9,19 @@ pub mod module_registry;
 pub mod state;
 pub mod error;
 pub mod config;
+pub mod workspace;
 
 // Re-export core types for public API
-pub use app::{TotthoCore, TotthoApp, AppPaths};
+pub use app::{TotthoCore, TotthoApp, AppPaths, Args};
 pub use event_bus::{EventBus, Event, EventHandler};
 pub use module_registry::{Module, ModuleRegistry, ModuleInfo, ModuleState};
 pub use state::{ApplicationState, WorkspaceLayout, UserPreferences, SessionData};
 pub use error::{CoreError, Result};
 pub use config::{TotthoConfig, StartupConfig, LoggingConfig, WorkspaceConfig};
+pub use workspace::{
+    WorkspaceManager, GlobalWorkspaceManager, Workspace, WorkspaceId,
+    WindowState, PanelInfo, PanelPosition, TabInfo, TabType
+};
 
 /// Core module version
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
