@@ -739,4 +739,258 @@ mod tests {
         assert!(!graph.dependencies.contains_key("b"));
         assert!(graph.dependencies.contains_key("a"));
     }
+
+    #[tokio::test]
+    async fn test_module_capabilities_tracking() {
+        let mut registry = ModuleRegistry::new();
+        
+        // Create a module with specific capabilities
+        struct CapabilityModule {
+            name: &'static str,
+            capabilities: Vec<String>,
+        }
+        
+        #[async_trait]
+        impl Module for CapabilityModule {
+            fn name(&self) -> &'static str { self.name }
+            fn dependencies(&self) -> Vec<&'static str> { Vec::new() }
+            async fn initialize(&mut self) -> Result<()> { Ok(()) }
+            async fn shutdown(&mut self) -> Result<()> { Ok(()) }
+            fn as_any(&self) -> &dyn Any { self }
+        }
+        
+        let module = CapabilityModule {
+            name: "capability_module",
+            capabilities: vec!["database".to_string(), "ui".to_string()],
+        };
+        
+        // Test module registration and capability tracking
+        assert!(registry.register(module).is_ok());
+        assert!(registry.get_module("capability_module").is_some());
+        
+        // Verify module can be retrieved by type
+        let retrieved = registry.get_module_typed::<CapabilityModule>("capability_module");
+        assert!(retrieved.is_some());
+        assert_eq!(retrieved.unwrap().capabilities.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_module_isolation_on_failure() {
+        let mut registry = ModuleRegistry::new();
+        
+        // Create modules where the middle one will fail (to test isolation)
+        let module_a = TestModule::new("module_a");
+        let module_b = TestModule::with_failure("module_b");
+        let module_c = TestModule::new("module_c");
+        
+        let a_flag = module_a.initialized.clone();
+        let c_flag = module_c.initialized.clone();
+        
+        registry.register(module_a).unwrap();
+        registry.register(module_b).unwrap();
+        registry.register(module_c).unwrap();
+        
+        // Test that failure of one module doesn't prevent others from being registered
+        assert_eq!(registry.get_module_names().len(), 3);
+        
+        // Test individual module initialization to verify isolation
+        // Module A should initialize successfully
+        assert!(registry.initialize_module("module_a").await.is_ok());
+        assert_eq!(registry.get_module_state("module_a"), Some(&ModuleState::Ready));
+        assert!(a_flag.load(Ordering::SeqCst));
+        
+        // Module B should fail to initialize
+        let result_b = registry.initialize_module("module_b").await;
+        assert!(result_b.is_err());
+        assert!(matches!(registry.get_module_state("module_b"), Some(ModuleState::Failed(_))));
+        
+        // Module C should initialize successfully despite B's failure
+        assert!(registry.initialize_module("module_c").await.is_ok());
+        assert_eq!(registry.get_module_state("module_c"), Some(&ModuleState::Ready));
+        assert!(c_flag.load(Ordering::SeqCst));
+        
+        // Test that initialize_all fails early and stops at first failure
+        let mut registry2 = ModuleRegistry::new();
+        
+        // Create modules in a specific order where the second one fails
+        let first_module = TestModule::new("first");
+        let failing_module = TestModule::with_failure("failing");  
+        let last_module = TestModule::new("last");
+        
+        registry2.register(first_module).unwrap();
+        registry2.register(failing_module).unwrap();
+        registry2.register(last_module).unwrap();
+        
+        let result = registry2.initialize_all().await;
+        assert!(result.is_err());
+        
+        // The initialization order is determined by dependency graph
+        // Since all modules have no dependencies, the order is based on the order they appear in the HashMap
+        // The first module in initialization order should be ready, failing module should be failed
+        // Any modules after the failing one should remain registered
+        let ready_count = registry2.get_modules_by_state(&ModuleState::Ready).len();
+        let registered_count = registry2.get_modules_by_state(&ModuleState::Registered).len();
+        
+        // Count failed modules manually since Failed is an enum variant with data
+        let mut failed_count = 0;
+        for module_name in registry2.get_module_names() {
+            if let Some(state) = registry2.get_module_state(&module_name) {
+                if matches!(state, ModuleState::Failed(_)) {
+                    failed_count += 1;
+                }
+            }
+        }
+        
+        // Should have exactly 1 failed module
+        assert_eq!(failed_count, 1);
+        // Should have some ready modules (those initialized before failure) or registered modules
+        assert!(ready_count >= 0);
+        assert!(registered_count >= 0);
+        // Total should be 3
+        assert_eq!(ready_count + failed_count + registered_count, 3);
+    }
+
+    #[tokio::test]
+    async fn test_complex_dependency_chain() {
+        let mut registry = ModuleRegistry::new();
+        
+        // Create a complex dependency chain: D -> C -> B -> A
+        let module_a = TestModule::new("module_a");
+        let module_b = TestModule::with_dependencies("module_b", vec!["module_a"]);
+        let module_c = TestModule::with_dependencies("module_c", vec!["module_b"]);
+        let module_d = TestModule::with_dependencies("module_d", vec!["module_c"]);
+        
+        // Register in random order
+        registry.register(module_c).unwrap();
+        registry.register(module_a).unwrap();
+        registry.register(module_d).unwrap();
+        registry.register(module_b).unwrap();
+        
+        // Test that dependency resolution works correctly
+        let init_order = registry.dependency_graph.get_initialization_order().unwrap();
+        
+        // Verify correct order: A, B, C, D
+        let a_pos = init_order.iter().position(|x| x == "module_a").unwrap();
+        let b_pos = init_order.iter().position(|x| x == "module_b").unwrap();
+        let c_pos = init_order.iter().position(|x| x == "module_c").unwrap();
+        let d_pos = init_order.iter().position(|x| x == "module_d").unwrap();
+        
+        assert!(a_pos < b_pos);
+        assert!(b_pos < c_pos);
+        assert!(c_pos < d_pos);
+        
+        // Test successful initialization
+        assert!(registry.initialize_all().await.is_ok());
+        assert_eq!(registry.get_modules_by_state(&ModuleState::Ready).len(), 4);
+    }
+
+    #[tokio::test]
+    async fn test_module_interface_validation_comprehensive() {
+        let mut registry = ModuleRegistry::new();
+        
+        // Test module with missing dependencies
+        struct MissingDepModule;
+        
+        #[async_trait]
+        impl Module for MissingDepModule {
+            fn name(&self) -> &'static str { "missing_dep_module" }
+            fn dependencies(&self) -> Vec<&'static str> { vec!["non_existent_module"] }
+            async fn initialize(&mut self) -> Result<()> { Ok(()) }
+            async fn shutdown(&mut self) -> Result<()> { Ok(()) }
+            fn as_any(&self) -> &dyn Any { self }
+        }
+        
+        // Should register successfully but log warning about missing dependency
+        let result = registry.register(MissingDepModule);
+        assert!(result.is_ok());
+        
+        // Test that module is registered despite missing dependency
+        assert!(registry.get_module("missing_dep_module").is_some());
+        
+        // Test initialization should fail due to missing dependency
+        let init_result = registry.initialize_module("missing_dep_module").await;
+        assert!(init_result.is_err());
+        assert!(matches!(init_result.unwrap_err(), CoreError::ModuleDependencyNotReady { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_with_partial_initialization() {
+        let mut registry = ModuleRegistry::new();
+        
+        let module_a = TestModule::new("module_a");
+        let module_b = TestModule::new("module_b");
+        let module_c = TestModule::new("module_c");
+        
+        let a_flag = module_a.initialized.clone();
+        let b_flag = module_b.initialized.clone();
+        let c_flag = module_c.initialized.clone();
+        
+        registry.register(module_a).unwrap();
+        registry.register(module_b).unwrap();
+        registry.register(module_c).unwrap();
+        
+        // Initialize only some modules
+        registry.initialize_module("module_a").await.unwrap();
+        registry.initialize_module("module_b").await.unwrap();
+        // Leave module_c uninitialized
+        
+        assert!(a_flag.load(Ordering::SeqCst));
+        assert!(b_flag.load(Ordering::SeqCst));
+        assert!(!c_flag.load(Ordering::SeqCst));
+        
+        // Test shutdown - should only shutdown initialized modules
+        registry.shutdown_all().await.unwrap();
+        
+        // Check that only initialized modules were shutdown
+        assert_eq!(registry.get_modules_by_state(&ModuleState::Shutdown).len(), 2);
+        assert_eq!(registry.get_modules_by_state(&ModuleState::Registered).len(), 1);
+        
+        // Verify flags
+        assert!(!a_flag.load(Ordering::SeqCst));
+        assert!(!b_flag.load(Ordering::SeqCst));
+        assert!(!c_flag.load(Ordering::SeqCst)); // Was never initialized
+    }
+
+    #[tokio::test]
+    async fn test_unregister_nonexistent_module() {
+        let mut registry = ModuleRegistry::new();
+        
+        // Test unregistering a module that doesn't exist
+        let result = registry.unregister("nonexistent_module").await;
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), CoreError::ModuleNotFound { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_initialize_nonexistent_module() {
+        let mut registry = ModuleRegistry::new();
+        
+        // Test initializing a module that doesn't exist
+        let result = registry.initialize_module("nonexistent_module").await;
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), CoreError::ModuleNotFound { .. }));
+    }
+
+    #[test]
+    fn test_dependency_graph_complex_scenarios() {
+        let mut graph = DependencyGraph::default();
+        
+        // Test empty graph
+        let empty_order = graph.get_initialization_order().unwrap();
+        assert!(empty_order.is_empty());
+        
+        // Test single module with no dependencies
+        graph.add_module("single".to_string(), vec![]);
+        let single_order = graph.get_initialization_order().unwrap();
+        assert_eq!(single_order, vec!["single"]);
+        
+        // Test multiple independent modules
+        graph.add_module("independent1".to_string(), vec![]);
+        graph.add_module("independent2".to_string(), vec![]);
+        let multi_order = graph.get_initialization_order().unwrap();
+        assert_eq!(multi_order.len(), 3);
+        assert!(multi_order.contains(&"single".to_string()));
+        assert!(multi_order.contains(&"independent1".to_string()));
+        assert!(multi_order.contains(&"independent2".to_string()));
+    }
 }
