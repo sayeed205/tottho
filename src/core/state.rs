@@ -1,10 +1,10 @@
 //! Application state management
-//! 
+//!
 //! Handles persistence and synchronization of application state across sessions.
 
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use serde::{Serialize, Deserialize};
 use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -341,19 +341,19 @@ impl IntegrityReport {
             warnings: Vec::new(),
         }
     }
-    
+
     pub fn add_error(&mut self, error: String) {
         self.errors.push(error);
     }
-    
+
     pub fn add_warning(&mut self, warning: String) {
         self.warnings.push(warning);
     }
-    
+
     pub fn is_valid(&self) -> bool {
         self.errors.is_empty()
     }
-    
+
     pub fn has_warnings(&self) -> bool {
         !self.warnings.is_empty()
     }
@@ -409,18 +409,20 @@ impl ApplicationState {
 
     /// Get the default state file path
     fn get_state_file_path() -> Result<PathBuf> {
-        let config_dir = dirs::config_dir()
-            .ok_or_else(|| CoreError::StateError("Could not determine config directory".to_string()))?;
-        
+        let config_dir = dirs::config_dir().ok_or_else(|| {
+            CoreError::StateError("Could not determine config directory".to_string())
+        })?;
+
         let tottho_dir = config_dir.join("tottho");
         Ok(tottho_dir.join("state.toml"))
     }
 
     /// Get the backup state file path
     fn get_backup_state_file_path() -> Result<PathBuf> {
-        let config_dir = dirs::config_dir()
-            .ok_or_else(|| CoreError::StateError("Could not determine config directory".to_string()))?;
-        
+        let config_dir = dirs::config_dir().ok_or_else(|| {
+            CoreError::StateError("Could not determine config directory".to_string())
+        })?;
+
         let tottho_dir = config_dir.join("tottho");
         Ok(tottho_dir.join("state.backup.toml"))
     }
@@ -429,8 +431,9 @@ impl ApplicationState {
     async fn ensure_state_directory() -> Result<()> {
         let state_file_path = Self::get_state_file_path()?;
         if let Some(parent) = state_file_path.parent() {
-            fs::create_dir_all(parent).await
-                .map_err(|e| CoreError::StateError(format!("Failed to create state directory: {}", e)))?;
+            fs::create_dir_all(parent).await.map_err(|e| {
+                CoreError::StateError(format!("Failed to create state directory: {}", e))
+            })?;
         }
         Ok(())
     }
@@ -438,9 +441,9 @@ impl ApplicationState {
     /// Load application state from storage with corruption recovery
     pub async fn load() -> Result<Self> {
         let state_file_path = Self::get_state_file_path()?;
-        
+
         tracing::debug!("Loading application state from: {:?}", state_file_path);
-        
+
         // If state file doesn't exist, return default state
         if !state_file_path.exists() {
             tracing::info!("State file not found, creating new default state");
@@ -455,7 +458,7 @@ impl ApplicationState {
             }
             Err(e) => {
                 tracing::warn!("Failed to load main state file: {}", e);
-                
+
                 // Try to load from backup
                 let backup_path = Self::get_backup_state_file_path()?;
                 if backup_path.exists() {
@@ -471,25 +474,35 @@ impl ApplicationState {
                         }
                         Err(backup_err) => {
                             tracing::error!("Failed to load backup state: {}", backup_err);
-                            
+
                             // Try to load corrupted state and recover what we can
-                            if let Ok(corrupted_state) = Self::load_corrupted_state(&state_file_path).await {
+                            if let Ok(corrupted_state) =
+                                Self::load_corrupted_state(&state_file_path).await
+                            {
                                 tracing::info!("Attempting to recover from corrupted state");
                                 match corrupted_state.handle_corruption() {
                                     Ok(recovered_state) => {
-                                        tracing::info!("Successfully recovered from corrupted state");
+                                        tracing::info!(
+                                            "Successfully recovered from corrupted state"
+                                        );
                                         // Save the recovered state
                                         if let Err(save_err) = recovered_state.save().await {
-                                            tracing::warn!("Failed to save recovered state: {}", save_err);
+                                            tracing::warn!(
+                                                "Failed to save recovered state: {}",
+                                                save_err
+                                            );
                                         }
                                         return Ok(recovered_state);
                                     }
                                     Err(recovery_err) => {
-                                        tracing::error!("Failed to recover from corrupted state: {}", recovery_err);
+                                        tracing::error!(
+                                            "Failed to recover from corrupted state: {}",
+                                            recovery_err
+                                        );
                                     }
                                 }
                             }
-                            
+
                             // All recovery attempts failed, return default state
                             tracing::warn!("All recovery attempts failed, using default state");
                             Ok(Self::new())
@@ -497,9 +510,10 @@ impl ApplicationState {
                     }
                 } else {
                     tracing::warn!("No backup state file found, attempting corruption recovery");
-                    
+
                     // Try to load corrupted state and recover what we can
-                    if let Ok(corrupted_state) = Self::load_corrupted_state(&state_file_path).await {
+                    if let Ok(corrupted_state) = Self::load_corrupted_state(&state_file_path).await
+                    {
                         tracing::info!("Attempting to recover from corrupted state");
                         match corrupted_state.handle_corruption() {
                             Ok(recovered_state) => {
@@ -511,11 +525,14 @@ impl ApplicationState {
                                 return Ok(recovered_state);
                             }
                             Err(recovery_err) => {
-                                tracing::error!("Failed to recover from corrupted state: {}", recovery_err);
+                                tracing::error!(
+                                    "Failed to recover from corrupted state: {}",
+                                    recovery_err
+                                );
                             }
                         }
                     }
-                    
+
                     tracing::warn!("Using default state");
                     Ok(Self::new())
                 }
@@ -525,48 +542,55 @@ impl ApplicationState {
 
     /// Load state from a specific file
     async fn load_from_file(path: &Path) -> Result<Self> {
-        let mut file = fs::File::open(path).await
+        let mut file = fs::File::open(path)
+            .await
             .map_err(|e| CoreError::StateError(format!("Failed to open state file: {}", e)))?;
-        
+
         let mut contents = String::new();
-        file.read_to_string(&mut contents).await
+        file.read_to_string(&mut contents)
+            .await
             .map_err(|e| CoreError::StateError(format!("Failed to read state file: {}", e)))?;
-        
+
         let state: ApplicationState = toml::from_str(&contents)
             .map_err(|e| CoreError::StateError(format!("Failed to parse state file: {}", e)))?;
-        
+
         Ok(state)
     }
 
     /// Load and validate state from a specific file
     async fn load_and_validate_from_file(path: &Path) -> Result<Self> {
         let state = Self::load_from_file(path).await?;
-        
+
         // Perform integrity check
         let integrity_report = state.check_integrity()?;
-        
+
         if !integrity_report.is_valid() {
             return Err(CoreError::StateCorruption {
                 reason: format!("State validation failed: {:?}", integrity_report.errors),
             });
         }
-        
+
         if integrity_report.has_warnings() {
-            tracing::warn!("State loaded with warnings: {:?}", integrity_report.warnings);
+            tracing::warn!(
+                "State loaded with warnings: {:?}",
+                integrity_report.warnings
+            );
         }
-        
+
         Ok(state)
     }
 
     /// Load corrupted state without validation (for recovery purposes)
     async fn load_corrupted_state(path: &Path) -> Result<Self> {
-        let mut file = fs::File::open(path).await
-            .map_err(|e| CoreError::StateError(format!("Failed to open corrupted state file: {}", e)))?;
-        
+        let mut file = fs::File::open(path).await.map_err(|e| {
+            CoreError::StateError(format!("Failed to open corrupted state file: {}", e))
+        })?;
+
         let mut contents = String::new();
-        file.read_to_string(&mut contents).await
-            .map_err(|e| CoreError::StateError(format!("Failed to read corrupted state file: {}", e)))?;
-        
+        file.read_to_string(&mut contents).await.map_err(|e| {
+            CoreError::StateError(format!("Failed to read corrupted state file: {}", e))
+        })?;
+
         // Try to parse as much as possible, using defaults for missing fields
         match toml::from_str::<ApplicationState>(&contents) {
             Ok(state) => Ok(state),
@@ -581,29 +605,38 @@ impl ApplicationState {
     /// Attempt to recover state from partially corrupted TOML
     fn recover_from_partial_toml(contents: &str) -> Result<Self> {
         let mut state = Self::new();
-        
+
         // Try to extract user preferences
         if let Some(prefs_section) = Self::extract_toml_section(contents, "user_preferences") {
-            if let Ok(prefs) = toml::from_str::<UserPreferences>(&format!("[user_preferences]\n{}", prefs_section)) {
+            if let Ok(prefs) =
+                toml::from_str::<UserPreferences>(&format!("[user_preferences]\n{}", prefs_section))
+            {
                 if Self::is_valid_user_preferences(&prefs) {
                     state.user_preferences = prefs;
                     tracing::info!("Recovered user preferences from corrupted state");
                 }
             }
         }
-        
+
         // Try to extract connection profiles
-        if let Some(profiles_section) = Self::extract_toml_section(contents, "connection_profiles") {
-            if let Ok(profiles) = toml::from_str::<Vec<ConnectionProfile>>(&format!("connection_profiles = {}", profiles_section)) {
+        if let Some(profiles_section) = Self::extract_toml_section(contents, "connection_profiles")
+        {
+            if let Ok(profiles) = toml::from_str::<Vec<ConnectionProfile>>(&format!(
+                "connection_profiles = {}",
+                profiles_section
+            )) {
                 for profile in profiles {
                     if Self::is_valid_connection_profile(&profile) {
                         state.connection_profiles.push(profile);
                     }
                 }
-                tracing::info!("Recovered {} connection profiles from corrupted state", state.connection_profiles.len());
+                tracing::info!(
+                    "Recovered {} connection profiles from corrupted state",
+                    state.connection_profiles.len()
+                );
             }
         }
-        
+
         Ok(state)
     }
 
@@ -611,17 +644,17 @@ impl ApplicationState {
     fn extract_toml_section(contents: &str, section_name: &str) -> Option<String> {
         let section_start = format!("{} = ", section_name);
         let lines: Vec<&str> = contents.lines().collect();
-        
+
         for (i, line) in lines.iter().enumerate() {
             let trimmed_line = line.trim();
             if trimmed_line.starts_with(&section_start) {
                 // Found the section, extract the value part
                 let mut section_content = String::new();
-                
+
                 // Get the content after the "section_name = " part
                 if let Some(content) = trimmed_line.strip_prefix(&section_start) {
                     section_content.push_str(content);
-                    
+
                     // If the content starts with '[' or '{', we need to find the matching closing bracket
                     let content_trimmed = content.trim();
                     if content_trimmed.starts_with('[') || content_trimmed.starts_with('{') {
@@ -629,7 +662,7 @@ impl ApplicationState {
                         let closing_char = if opening_char == '[' { ']' } else { '}' };
                         let mut bracket_count = 0;
                         let mut found_complete = false;
-                        
+
                         // Count brackets in the first line
                         for ch in content.chars() {
                             if ch == opening_char {
@@ -642,14 +675,14 @@ impl ApplicationState {
                                 }
                             }
                         }
-                        
+
                         // If not complete, continue reading lines
                         if !found_complete {
                             for j in (i + 1)..lines.len() {
                                 let current_line = lines[j];
                                 section_content.push('\n');
                                 section_content.push_str(current_line);
-                                
+
                                 // Count brackets in this line
                                 for ch in current_line.chars() {
                                     if ch == opening_char {
@@ -662,24 +695,27 @@ impl ApplicationState {
                                         }
                                     }
                                 }
-                                
+
                                 if found_complete {
                                     break;
                                 }
-                                
+
                                 // Stop if we hit another top-level section
-                                if current_line.trim().contains(" = ") && !current_line.trim().starts_with(' ') && !current_line.trim().starts_with('\t') {
+                                if current_line.trim().contains(" = ")
+                                    && !current_line.trim().starts_with(' ')
+                                    && !current_line.trim().starts_with('\t')
+                                {
                                     break;
                                 }
                             }
                         }
                     }
                 }
-                
+
                 return Some(section_content);
             }
         }
-        
+
         None
     }
 
@@ -692,17 +728,20 @@ impl ApplicationState {
                 reason: format!("Cannot save invalid state: {:?}", integrity_report.errors),
             });
         }
-        
+
         if integrity_report.has_warnings() {
-            tracing::warn!("Saving state with warnings: {:?}", integrity_report.warnings);
+            tracing::warn!(
+                "Saving state with warnings: {:?}",
+                integrity_report.warnings
+            );
         }
-        
+
         Self::ensure_state_directory().await?;
-        
+
         let state_file_path = Self::get_state_file_path()?;
-        
+
         tracing::debug!("Saving application state to: {:?}", state_file_path);
-        
+
         // Create backup before saving new state
         if state_file_path.exists() {
             if let Err(e) = self.create_backup().await {
@@ -710,27 +749,31 @@ impl ApplicationState {
                 // Continue with save operation even if backup fails
             }
         }
-        
+
         // Serialize state to TOML
         let toml_content = toml::to_string_pretty(self)
             .map_err(|e| CoreError::StateError(format!("Failed to serialize state: {}", e)))?;
-        
+
         // Write to temporary file first, then rename for atomic operation
         let temp_file_path = state_file_path.with_extension("tmp");
-        
-        let mut file = fs::File::create(&temp_file_path).await
-            .map_err(|e| CoreError::StateError(format!("Failed to create temp state file: {}", e)))?;
-        
-        file.write_all(toml_content.as_bytes()).await
+
+        let mut file = fs::File::create(&temp_file_path).await.map_err(|e| {
+            CoreError::StateError(format!("Failed to create temp state file: {}", e))
+        })?;
+
+        file.write_all(toml_content.as_bytes())
+            .await
             .map_err(|e| CoreError::StateError(format!("Failed to write state file: {}", e)))?;
-        
-        file.sync_all().await
+
+        file.sync_all()
+            .await
             .map_err(|e| CoreError::StateError(format!("Failed to sync state file: {}", e)))?;
-        
+
         // Atomically replace the old file with the new one
-        fs::rename(&temp_file_path, &state_file_path).await
+        fs::rename(&temp_file_path, &state_file_path)
+            .await
             .map_err(|e| CoreError::StateError(format!("Failed to replace state file: {}", e)))?;
-        
+
         tracing::info!("Successfully saved application state");
         Ok(())
     }
@@ -738,17 +781,20 @@ impl ApplicationState {
     /// Validate the state for consistency and integrity (legacy method)
     fn validate(&self) -> Result<()> {
         let integrity_report = self.check_integrity()?;
-        
+
         if !integrity_report.is_valid() {
             return Err(CoreError::StateCorruption {
                 reason: format!("State validation failed: {:?}", integrity_report.errors),
             });
         }
-        
+
         if integrity_report.has_warnings() {
-            tracing::warn!("State validation completed with warnings: {:?}", integrity_report.warnings);
+            tracing::warn!(
+                "State validation completed with warnings: {:?}",
+                integrity_report.warnings
+            );
         }
-        
+
         tracing::debug!("State validation passed");
         Ok(())
     }
@@ -756,60 +802,68 @@ impl ApplicationState {
     /// Restore session state including workspace layouts and editor states
     pub async fn restore_session(&self, context: &mut SessionRestorationContext) -> Result<()> {
         tracing::info!("Starting session restoration");
-        
+
         // Restore workspace layouts
         self.restore_workspace_layouts(context).await?;
-        
+
         // Restore editor states
         self.restore_editor_states(context).await?;
-        
+
         // Restore recent connections
         self.restore_recent_connections(context).await?;
-        
+
         // Restore UI state
         self.restore_ui_state(context).await?;
-        
+
         tracing::info!("Session restoration completed successfully");
         Ok(())
     }
 
     /// Restore workspace layouts
-    async fn restore_workspace_layouts(&self, context: &mut SessionRestorationContext) -> Result<()> {
+    async fn restore_workspace_layouts(
+        &self,
+        context: &mut SessionRestorationContext,
+    ) -> Result<()> {
         tracing::debug!("Restoring workspace layouts");
-        
+
         // Get the last active workspace or default
         let default_workspace = "default".to_string();
-        let workspace_id = self.session_data.last_workspace
+        let workspace_id = self
+            .session_data
+            .last_workspace
             .as_ref()
             .unwrap_or(&default_workspace);
-        
+
         if let Some(layout) = self.workspace_layouts.get(workspace_id) {
             // Restore window bounds
             context.set_window_bounds(&layout.window_bounds)?;
-            
+
             // Restore panel states
             for (panel_id, panel_state) in &layout.panel_states {
                 context.set_panel_state(panel_id, panel_state)?;
             }
-            
+
             // Restore active panes
             for pane_info in &layout.active_panes {
                 context.restore_pane(pane_info)?;
             }
-            
+
             tracing::info!("Restored workspace layout: {}", workspace_id);
         } else {
-            tracing::warn!("Workspace layout not found: {}, using default", workspace_id);
+            tracing::warn!(
+                "Workspace layout not found: {}, using default",
+                workspace_id
+            );
             context.use_default_layout()?;
         }
-        
+
         Ok(())
     }
 
     /// Restore editor states
     async fn restore_editor_states(&self, context: &mut SessionRestorationContext) -> Result<()> {
         tracing::debug!("Restoring editor states");
-        
+
         for editor_state in &self.session_data.open_editors {
             match context.restore_editor(editor_state).await {
                 Ok(_) => {
@@ -821,15 +875,18 @@ impl ApplicationState {
                 }
             }
         }
-        
+
         tracing::info!("Restored {} editors", self.session_data.open_editors.len());
         Ok(())
     }
 
     /// Restore recent connections
-    async fn restore_recent_connections(&self, context: &mut SessionRestorationContext) -> Result<()> {
+    async fn restore_recent_connections(
+        &self,
+        context: &mut SessionRestorationContext,
+    ) -> Result<()> {
         tracing::debug!("Restoring recent connections");
-        
+
         for connection_id in &self.session_data.recent_connections {
             if let Some(profile) = self.get_connection_profile(connection_id.clone()) {
                 match context.prepare_connection(profile).await {
@@ -845,28 +902,32 @@ impl ApplicationState {
                 tracing::warn!("Connection profile not found: {}", connection_id);
             }
         }
-        
+
         Ok(())
     }
 
     /// Restore UI state
     async fn restore_ui_state(&self, context: &mut SessionRestorationContext) -> Result<()> {
         tracing::debug!("Restoring UI state");
-        
+
         // Apply user preferences
         context.apply_user_preferences(&self.user_preferences)?;
-        
+
         // Restore query history (make it available to UI components)
         context.set_query_history(&self.session_data.query_history)?;
-        
+
         tracing::info!("UI state restored");
         Ok(())
     }
 
     /// Synchronize state changes across application components
-    pub async fn synchronize_state(&self, changes: StateChanges, observers: &[Box<dyn StateObserver>]) -> Result<()> {
+    pub async fn synchronize_state(
+        &self,
+        changes: StateChanges,
+        observers: &[Box<dyn StateObserver>],
+    ) -> Result<()> {
         tracing::debug!("Synchronizing state changes: {:?}", changes);
-        
+
         // Notify all registered state observers
         for observer in observers {
             match observer.notify_state_change(&changes).await {
@@ -878,12 +939,12 @@ impl ApplicationState {
                 }
             }
         }
-        
+
         // Update internal state if needed
         if changes.requires_persistence {
             self.save().await?;
         }
-        
+
         Ok(())
     }
 
@@ -902,28 +963,31 @@ impl ApplicationState {
     /// Restore from a session snapshot
     pub async fn restore_from_snapshot(&mut self, snapshot: SessionSnapshot) -> Result<()> {
         tracing::info!("Restoring from session snapshot");
-        
+
         // Validate snapshot age (don't restore very old snapshots)
         let age = chrono::Utc::now() - snapshot.timestamp;
         if age > chrono::Duration::hours(24) {
-            tracing::warn!("Session snapshot is old ({} hours), using with caution", age.num_hours());
+            tracing::warn!(
+                "Session snapshot is old ({} hours), using with caution",
+                age.num_hours()
+            );
         }
-        
+
         // Restore workspace layouts
         self.workspace_layouts = snapshot.workspace_layouts;
-        
+
         // Restore session data
         self.session_data.last_workspace = snapshot.active_workspace;
         self.session_data.open_editors = snapshot.open_editors;
         self.session_data.recent_connections = snapshot.recent_connections;
-        
+
         // Restore user preferences (with validation)
         if Self::is_valid_user_preferences(&snapshot.user_preferences) {
             self.user_preferences = snapshot.user_preferences;
         } else {
             tracing::warn!("Invalid user preferences in snapshot, keeping current preferences");
         }
-        
+
         tracing::info!("Session snapshot restored successfully");
         Ok(())
     }
@@ -931,10 +995,10 @@ impl ApplicationState {
     /// Handle state corruption by falling back to defaults
     pub fn handle_corruption(&self) -> Result<Self> {
         tracing::warn!("State corruption detected, falling back to defaults");
-        
+
         // Try to preserve some user data if possible
         let mut new_state = Self::new();
-        
+
         // Attempt to preserve valid connection profiles
         for profile in &self.connection_profiles {
             if Self::is_valid_connection_profile(profile) {
@@ -942,27 +1006,32 @@ impl ApplicationState {
                 tracing::info!("Preserved connection profile: {}", profile.name);
             }
         }
-        
+
         // Attempt to preserve valid user preferences
         if Self::is_valid_user_preferences(&self.user_preferences) {
             new_state.user_preferences = self.user_preferences.clone();
             tracing::info!("Preserved user preferences");
         }
-        
+
         // Attempt to preserve recent query history (last 10 queries)
-        let valid_queries: Vec<_> = self.session_data.query_history
+        let valid_queries: Vec<_> = self
+            .session_data
+            .query_history
             .iter()
             .rev()
             .take(10)
             .filter(|entry| Self::is_valid_query_history_entry(entry))
             .cloned()
             .collect();
-        
+
         if !valid_queries.is_empty() {
             new_state.session_data.query_history = valid_queries.into_iter().rev().collect();
-            tracing::info!("Preserved {} recent queries", new_state.session_data.query_history.len());
+            tracing::info!(
+                "Preserved {} recent queries",
+                new_state.session_data.query_history.len()
+            );
         }
-        
+
         Ok(new_state)
     }
 
@@ -970,31 +1039,35 @@ impl ApplicationState {
     pub async fn create_backup(&self) -> Result<()> {
         let backup_path = Self::get_backup_state_file_path()?;
         let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-        let timestamped_backup = backup_path.with_file_name(format!("state.backup.{}.toml", timestamp));
-        
+        let timestamped_backup =
+            backup_path.with_file_name(format!("state.backup.{}.toml", timestamp));
+
         tracing::debug!("Creating state backup at: {:?}", timestamped_backup);
-        
+
         // Ensure backup directory exists
         if let Some(parent) = timestamped_backup.parent() {
-            fs::create_dir_all(parent).await
-                .map_err(|e| CoreError::StateError(format!("Failed to create backup directory: {}", e)))?;
+            fs::create_dir_all(parent).await.map_err(|e| {
+                CoreError::StateError(format!("Failed to create backup directory: {}", e))
+            })?;
         }
-        
+
         // Serialize and save backup
-        let toml_content = toml::to_string_pretty(self)
-            .map_err(|e| CoreError::StateError(format!("Failed to serialize state for backup: {}", e)))?;
-        
-        fs::write(&timestamped_backup, toml_content).await
+        let toml_content = toml::to_string_pretty(self).map_err(|e| {
+            CoreError::StateError(format!("Failed to serialize state for backup: {}", e))
+        })?;
+
+        fs::write(&timestamped_backup, toml_content)
+            .await
             .map_err(|e| CoreError::StateError(format!("Failed to write backup file: {}", e)))?;
-        
+
         // Also update the main backup file
         if let Err(e) = fs::copy(&timestamped_backup, &backup_path).await {
             tracing::warn!("Failed to update main backup file: {}", e);
         }
-        
+
         // Clean up old backups (keep last 5)
         self.cleanup_old_backups().await;
-        
+
         tracing::info!("State backup created successfully");
         Ok(())
     }
@@ -1002,18 +1075,18 @@ impl ApplicationState {
     /// Restore state from backup
     pub async fn restore_from_backup() -> Result<Self> {
         let backup_path = Self::get_backup_state_file_path()?;
-        
+
         if !backup_path.exists() {
             return Err(CoreError::StateError("No backup file found".to_string()));
         }
-        
+
         tracing::info!("Restoring state from backup: {:?}", backup_path);
-        
+
         let state = Self::load_from_file(&backup_path).await?;
-        
+
         // Validate the restored state
         state.validate()?;
-        
+
         tracing::info!("State restored from backup successfully");
         Ok(state)
     }
@@ -1027,25 +1100,26 @@ impl ApplicationState {
             },
             Err(_) => return,
         };
-        
+
         let mut backup_files = Vec::new();
-        
+
         if let Ok(mut entries) = fs::read_dir(&backup_dir).await {
             while let Ok(Some(entry)) = entries.next_entry().await {
                 let path = entry.path();
                 if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                     if name.starts_with("state.backup.") && name.ends_with(".toml") {
                         if let Ok(metadata) = entry.metadata().await {
-                            backup_files.push((path, metadata.modified().unwrap_or(std::time::UNIX_EPOCH)));
+                            backup_files
+                                .push((path, metadata.modified().unwrap_or(std::time::UNIX_EPOCH)));
                         }
                     }
                 }
             }
         }
-        
+
         // Sort by modification time (newest first)
         backup_files.sort_by(|a, b| b.1.cmp(&a.1));
-        
+
         // Remove old backups (keep only 5 most recent)
         for (path, _) in backup_files.into_iter().skip(5) {
             if let Err(e) = fs::remove_file(&path).await {
@@ -1059,46 +1133,49 @@ impl ApplicationState {
     /// Perform comprehensive state integrity check
     pub fn check_integrity(&self) -> Result<IntegrityReport> {
         let mut report = IntegrityReport::new();
-        
+
         // Check version
         if self.version.is_empty() {
             report.add_error("Missing version information".to_string());
         }
-        
+
         // Check workspace layouts
         for (id, layout) in &self.workspace_layouts {
             if layout.id != *id {
-                report.add_error(format!("Workspace layout ID mismatch: {} != {}", layout.id, id));
+                report.add_error(format!(
+                    "Workspace layout ID mismatch: {} != {}",
+                    layout.id, id
+                ));
             }
-            
+
             if layout.window_bounds.width == 0 || layout.window_bounds.height == 0 {
                 report.add_warning(format!("Invalid window bounds for workspace {}", id));
             }
-            
+
             if layout.window_bounds.width > 10000 || layout.window_bounds.height > 10000 {
                 report.add_warning(format!("Suspicious window bounds for workspace {}", id));
             }
         }
-        
+
         // Check connection profiles
         for profile in &self.connection_profiles {
             if !Self::is_valid_connection_profile(profile) {
                 report.add_error(format!("Invalid connection profile: {}", profile.name));
             }
         }
-        
+
         // Check user preferences
         if !Self::is_valid_user_preferences(&self.user_preferences) {
             report.add_error("Invalid user preferences".to_string());
         }
-        
+
         // Check session data
         for entry in &self.session_data.query_history {
             if !Self::is_valid_query_history_entry(entry) {
                 report.add_warning(format!("Invalid query history entry: {}", entry.id));
             }
         }
-        
+
         // Check for duplicate connection IDs
         let mut connection_ids = std::collections::HashSet::new();
         for profile in &self.connection_profiles {
@@ -1106,32 +1183,38 @@ impl ApplicationState {
                 report.add_error(format!("Duplicate connection ID: {}", profile.id));
             }
         }
-        
+
         // Check for orphaned references
-        let valid_connection_ids: std::collections::HashSet<_> = 
+        let valid_connection_ids: std::collections::HashSet<_> =
             self.connection_profiles.iter().map(|p| &p.id).collect();
-        
+
         for connection_id in &self.session_data.recent_connections {
             if !valid_connection_ids.contains(connection_id) {
                 report.add_warning(format!("Orphaned connection reference: {}", connection_id));
             }
         }
-        
+
         for entry in &self.session_data.query_history {
             if !valid_connection_ids.contains(&entry.connection_id) {
-                report.add_warning(format!("Query history references unknown connection: {}", entry.connection_id));
+                report.add_warning(format!(
+                    "Query history references unknown connection: {}",
+                    entry.connection_id
+                ));
             }
         }
-        
-        tracing::debug!("State integrity check completed: {} errors, {} warnings", 
-                       report.errors.len(), report.warnings.len());
-        
+
+        tracing::debug!(
+            "State integrity check completed: {} errors, {} warnings",
+            report.errors.len(),
+            report.warnings.len()
+        );
+
         Ok(report)
     }
 
     /// Validate a connection profile
     fn is_valid_connection_profile(profile: &ConnectionProfile) -> bool {
-        !profile.id.is_empty() 
+        !profile.id.is_empty()
             && !profile.name.is_empty()
             && !profile.host.is_empty()
             && profile.port > 0
@@ -1141,7 +1224,7 @@ impl ApplicationState {
 
     /// Validate user preferences
     fn is_valid_user_preferences(prefs: &UserPreferences) -> bool {
-        prefs.font_size > 0 
+        prefs.font_size > 0
             && prefs.font_size <= 72
             && prefs.tab_size > 0
             && prefs.tab_size <= 16
@@ -1182,7 +1265,7 @@ impl ApplicationState {
     /// Add query to history
     pub fn add_query_history(&mut self, entry: QueryHistoryEntry) {
         self.session_data.query_history.push(entry);
-        
+
         // Keep only the last 1000 queries
         if self.session_data.query_history.len() > 1000 {
             self.session_data.query_history.remove(0);
@@ -1190,7 +1273,11 @@ impl ApplicationState {
     }
 
     /// Get recent queries for a connection
-    pub fn get_recent_queries(&self, connection_id: ConnectionId, limit: usize) -> Vec<&QueryHistoryEntry> {
+    pub fn get_recent_queries(
+        &self,
+        connection_id: ConnectionId,
+        limit: usize,
+    ) -> Vec<&QueryHistoryEntry> {
         self.session_data
             .query_history
             .iter()
@@ -1218,7 +1305,9 @@ impl ApplicationState {
     /// Add an editor to the session
     pub fn add_editor_state(&mut self, editor_state: EditorState) {
         // Remove existing editor with same ID if present
-        self.session_data.open_editors.retain(|e| e.id != editor_state.id);
+        self.session_data
+            .open_editors
+            .retain(|e| e.id != editor_state.id);
         self.session_data.open_editors.push(editor_state);
     }
 
@@ -1232,11 +1321,15 @@ impl ApplicationState {
     /// Update recent connections list
     pub fn update_recent_connections(&mut self, connection_id: ConnectionId) {
         // Remove if already present
-        self.session_data.recent_connections.retain(|id| id != &connection_id);
-        
+        self.session_data
+            .recent_connections
+            .retain(|id| id != &connection_id);
+
         // Add to front
-        self.session_data.recent_connections.insert(0, connection_id);
-        
+        self.session_data
+            .recent_connections
+            .insert(0, connection_id);
+
         // Keep only last 10 connections
         if self.session_data.recent_connections.len() > 10 {
             self.session_data.recent_connections.truncate(10);
@@ -1250,7 +1343,7 @@ impl ApplicationState {
 
     /// Check if session has restorable content
     pub fn has_restorable_session(&self) -> bool {
-        !self.workspace_layouts.is_empty() 
+        !self.workspace_layouts.is_empty()
             || !self.session_data.open_editors.is_empty()
             || !self.session_data.recent_connections.is_empty()
     }
@@ -1266,12 +1359,13 @@ impl Default for ApplicationState {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+    use std::sync::Arc;
     use tempfile::TempDir;
     use tokio::fs;
 
     fn create_test_state() -> ApplicationState {
         let mut state = ApplicationState::new();
-        
+
         // Add test connection profile
         state.add_connection_profile(ConnectionProfile {
             id: "test_conn_1".to_string(),
@@ -1285,7 +1379,7 @@ mod tests {
             created_at: chrono::Utc::now(),
             last_used: Some(chrono::Utc::now()),
         });
-        
+
         // Add test workspace layout
         let workspace_layout = WorkspaceLayout {
             id: "default".to_string(),
@@ -1300,7 +1394,7 @@ mod tests {
             active_panes: Vec::new(),
         };
         state.update_workspace_layout(workspace_layout);
-        
+
         // Add test query history
         state.add_query_history(QueryHistoryEntry {
             id: "query_1".to_string(),
@@ -1311,7 +1405,7 @@ mod tests {
             success: true,
             error_message: None,
         });
-        
+
         state
     }
 
@@ -1319,7 +1413,7 @@ mod tests {
     async fn test_state_integrity_check() {
         let state = create_test_state();
         let report = state.check_integrity().unwrap();
-        
+
         assert!(report.is_valid(), "State should be valid");
         assert!(!report.has_warnings(), "State should have no warnings");
     }
@@ -1327,7 +1421,7 @@ mod tests {
     #[tokio::test]
     async fn test_state_integrity_check_with_errors() {
         let mut state = create_test_state();
-        
+
         // Add invalid connection profile
         state.connection_profiles.push(ConnectionProfile {
             id: "".to_string(), // Invalid empty ID
@@ -1341,9 +1435,9 @@ mod tests {
             created_at: chrono::Utc::now(),
             last_used: None,
         });
-        
+
         let report = state.check_integrity().unwrap();
-        
+
         assert!(!report.is_valid(), "State should be invalid");
         assert!(!report.errors.is_empty(), "Should have errors");
     }
@@ -1351,35 +1445,45 @@ mod tests {
     #[tokio::test]
     async fn test_corruption_recovery() {
         let mut corrupted_state = create_test_state();
-        
+
         // Add some invalid data to simulate corruption
         corrupted_state.connection_profiles.push(ConnectionProfile {
-            id: "".to_string(), // Invalid
+            id: "".to_string(),   // Invalid
             name: "".to_string(), // Invalid
             database_type: "postgresql".to_string(),
             host: "".to_string(), // Invalid
-            port: 0, // Invalid
+            port: 0,              // Invalid
             database: "testdb".to_string(),
             username: "testuser".to_string(),
             ssl_mode: "prefer".to_string(),
             created_at: chrono::Utc::now(),
             last_used: None,
         });
-        
+
         // Corrupt user preferences
         corrupted_state.user_preferences.font_size = 0; // Invalid
-        
+
         let recovered_state = corrupted_state.handle_corruption().unwrap();
-        
+
         // Check that valid data was preserved
-        assert_eq!(recovered_state.connection_profiles.len(), 1, "Should preserve valid connection");
+        assert_eq!(
+            recovered_state.connection_profiles.len(),
+            1,
+            "Should preserve valid connection"
+        );
         assert_eq!(recovered_state.connection_profiles[0].id, "test_conn_1");
-        
+
         // Check that invalid preferences were reset to defaults
-        assert_eq!(recovered_state.user_preferences.font_size, 14, "Should use default font size");
-        
+        assert_eq!(
+            recovered_state.user_preferences.font_size, 14,
+            "Should use default font size"
+        );
+
         // Check that query history was preserved
-        assert!(!recovered_state.session_data.query_history.is_empty(), "Should preserve query history");
+        assert!(
+            !recovered_state.session_data.query_history.is_empty(),
+            "Should preserve query history"
+        );
     }
 
     #[tokio::test]
@@ -1397,8 +1501,10 @@ mod tests {
             created_at: chrono::Utc::now(),
             last_used: None,
         };
-        assert!(ApplicationState::is_valid_connection_profile(&valid_profile));
-        
+        assert!(ApplicationState::is_valid_connection_profile(
+            &valid_profile
+        ));
+
         // Test invalid connection profile
         let invalid_profile = ConnectionProfile {
             id: "".to_string(), // Invalid
@@ -1412,17 +1518,19 @@ mod tests {
             created_at: chrono::Utc::now(),
             last_used: None,
         };
-        assert!(!ApplicationState::is_valid_connection_profile(&invalid_profile));
-        
+        assert!(!ApplicationState::is_valid_connection_profile(
+            &invalid_profile
+        ));
+
         // Test valid user preferences
         let valid_prefs = UserPreferences::default();
         assert!(ApplicationState::is_valid_user_preferences(&valid_prefs));
-        
+
         // Test invalid user preferences
         let mut invalid_prefs = UserPreferences::default();
         invalid_prefs.font_size = 0; // Invalid
         assert!(!ApplicationState::is_valid_user_preferences(&invalid_prefs));
-        
+
         // Test valid query history entry
         let valid_entry = QueryHistoryEntry {
             id: "test_query".to_string(),
@@ -1434,7 +1542,7 @@ mod tests {
             error_message: None,
         };
         assert!(ApplicationState::is_valid_query_history_entry(&valid_entry));
-        
+
         // Test invalid query history entry
         let invalid_entry = QueryHistoryEntry {
             id: "".to_string(), // Invalid
@@ -1445,7 +1553,9 @@ mod tests {
             success: true,
             error_message: None,
         };
-        assert!(!ApplicationState::is_valid_query_history_entry(&invalid_entry));
+        assert!(!ApplicationState::is_valid_query_history_entry(
+            &invalid_entry
+        ));
     }
 
     #[tokio::test]
@@ -1453,17 +1563,17 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let state_path = temp_dir.path().join("state.toml");
         let _backup_path = temp_dir.path().join("state.backup.toml");
-        
+
         let original_state = create_test_state();
-        
+
         // Save state to temporary file
         let toml_content = toml::to_string_pretty(&original_state).unwrap();
         fs::write(&state_path, toml_content).await.unwrap();
-        
+
         // Load state and create backup
         let loaded_state = ApplicationState::load_from_file(&state_path).await.unwrap();
         loaded_state.create_backup().await.unwrap();
-        
+
         // Verify backup was created (this is a simplified test since we can't easily mock the path functions)
         // In a real scenario, we would need to mock the path functions or use dependency injection
     }
@@ -1471,7 +1581,7 @@ mod tests {
     #[tokio::test]
     async fn test_session_restoration_context() {
         let mut context = SessionRestorationContext::new();
-        
+
         // Test that methods work without managers (should not panic)
         let bounds = WindowBounds {
             x: 100,
@@ -1481,7 +1591,7 @@ mod tests {
             maximized: false,
         };
         assert!(context.set_window_bounds(&bounds).is_ok());
-        
+
         let panel_state = PanelState {
             visible: true,
             width: Some(300),
@@ -1489,7 +1599,7 @@ mod tests {
             position: PanelPosition::Left,
         };
         assert!(context.set_panel_state("test_panel", &panel_state).is_ok());
-        
+
         let prefs = UserPreferences::default();
         assert!(context.apply_user_preferences(&prefs).is_ok());
     }
@@ -1498,16 +1608,16 @@ mod tests {
     async fn test_session_snapshot() {
         let state = create_test_state();
         let snapshot = state.create_session_snapshot();
-        
+
         assert_eq!(snapshot.workspace_layouts.len(), 1);
         assert!(snapshot.workspace_layouts.contains_key("default"));
         assert_eq!(snapshot.open_editors.len(), 0); // No editors in test state
         assert_eq!(snapshot.recent_connections.len(), 0); // No recent connections in test state
-        
+
         // Test restoring from snapshot
         let mut new_state = ApplicationState::new();
         new_state.restore_from_snapshot(snapshot).await.unwrap();
-        
+
         assert_eq!(new_state.workspace_layouts.len(), 1);
         assert!(new_state.workspace_layouts.contains_key("default"));
     }
@@ -1515,11 +1625,14 @@ mod tests {
     #[tokio::test]
     async fn test_session_management_methods() {
         let mut state = ApplicationState::new();
-        
+
         // Test workspace management
         state.set_active_workspace("test_workspace".to_string());
-        assert_eq!(state.session_data.last_workspace, Some("test_workspace".to_string()));
-        
+        assert_eq!(
+            state.session_data.last_workspace,
+            Some("test_workspace".to_string())
+        );
+
         // Test editor management
         let editor_state = EditorState {
             id: "editor_1".to_string(),
@@ -1528,27 +1641,30 @@ mod tests {
             content: "SELECT * FROM users".to_string(),
             cursor_position: CursorPosition { line: 1, column: 1 },
         };
-        
+
         state.add_editor_state(editor_state.clone());
         assert_eq!(state.session_data.open_editors.len(), 1);
         assert_eq!(state.session_data.open_editors[0].id, "editor_1");
-        
+
         // Test removing editor
         assert!(state.remove_editor_state("editor_1"));
         assert_eq!(state.session_data.open_editors.len(), 0);
         assert!(!state.remove_editor_state("nonexistent"));
-        
+
         // Test recent connections
         state.update_recent_connections("conn_1".to_string());
         state.update_recent_connections("conn_2".to_string());
         state.update_recent_connections("conn_1".to_string()); // Should move to front
-        
+
         assert_eq!(state.session_data.recent_connections.len(), 2);
-        assert_eq!(state.get_most_recent_connection(), Some(&"conn_1".to_string()));
-        
+        assert_eq!(
+            state.get_most_recent_connection(),
+            Some(&"conn_1".to_string())
+        );
+
         // Test restorable session check
         assert!(state.has_restorable_session()); // Has recent connections
-        
+
         let empty_state = ApplicationState::new();
         assert!(!empty_state.has_restorable_session());
     }
@@ -1558,7 +1674,7 @@ mod tests {
         let changes = StateChanges::new(StateChangeType::WorkspaceLayoutChanged)
             .with_components(vec!["workspace".to_string(), "panels".to_string()])
             .with_persistence(true);
-        
+
         assert_eq!(changes.change_type, StateChangeType::WorkspaceLayoutChanged);
         assert_eq!(changes.affected_components.len(), 2);
         assert!(changes.requires_persistence);
@@ -1574,21 +1690,892 @@ connection_profiles = [
 ]
 workspace_layouts = {}
 "#;
-        
-        let prefs_section = ApplicationState::extract_toml_section(corrupted_toml, "user_preferences");
+
+        let prefs_section =
+            ApplicationState::extract_toml_section(corrupted_toml, "user_preferences");
         assert!(prefs_section.is_some());
         let prefs_content = prefs_section.unwrap();
         assert!(prefs_content.contains("theme = \"dark\""));
         assert!(prefs_content.contains("font_size = 14"));
-        
-        let profiles_section = ApplicationState::extract_toml_section(corrupted_toml, "connection_profiles");
+
+        let profiles_section =
+            ApplicationState::extract_toml_section(corrupted_toml, "connection_profiles");
         assert!(profiles_section.is_some());
         let profiles_content = profiles_section.unwrap();
         assert!(profiles_content.contains("conn1"));
         assert!(profiles_content.contains("id = \"conn1\""));
-        
-        let layouts_section = ApplicationState::extract_toml_section(corrupted_toml, "workspace_layouts");
+
+        let layouts_section =
+            ApplicationState::extract_toml_section(corrupted_toml, "workspace_layouts");
         assert!(layouts_section.is_some());
         assert_eq!(layouts_section.unwrap().trim(), "{}");
+    }
+
+    // Additional comprehensive tests for task 5.4
+
+    #[tokio::test]
+    async fn test_state_persistence_and_restoration() {
+        // Test comprehensive state persistence and restoration functionality
+        // Requirements: 3.1, 3.2, 3.3
+
+        let temp_dir = TempDir::new().unwrap();
+        let state_path = temp_dir.path().join("state.toml");
+
+        // Create a comprehensive test state
+        let mut original_state = create_test_state();
+
+        // Add more complex data to test persistence
+        original_state.user_preferences.theme = "custom_theme".to_string();
+        original_state.user_preferences.font_size = 16;
+        original_state.user_preferences.auto_complete = false;
+
+        // Add multiple workspace layouts
+        let workspace2 = WorkspaceLayout {
+            id: "workspace2".to_string(),
+            window_bounds: WindowBounds {
+                x: 200,
+                y: 150,
+                width: 1400,
+                height: 900,
+                maximized: true,
+            },
+            panel_states: {
+                let mut panels = HashMap::new();
+                panels.insert(
+                    "left_panel".to_string(),
+                    PanelState {
+                        visible: true,
+                        width: Some(300),
+                        height: None,
+                        position: PanelPosition::Left,
+                    },
+                );
+                panels.insert(
+                    "bottom_panel".to_string(),
+                    PanelState {
+                        visible: false,
+                        width: None,
+                        height: Some(200),
+                        position: PanelPosition::Bottom,
+                    },
+                );
+                panels
+            },
+            active_panes: vec![
+                PaneInfo {
+                    id: "pane1".to_string(),
+                    pane_type: "query_editor".to_string(),
+                    active: true,
+                    data: serde_json::json!({"query": "SELECT * FROM users"}),
+                },
+                PaneInfo {
+                    id: "pane2".to_string(),
+                    pane_type: "result_viewer".to_string(),
+                    active: false,
+                    data: serde_json::json!({"connection_id": "test_conn_1"}),
+                },
+            ],
+        };
+        original_state.update_workspace_layout(workspace2);
+
+        // Add multiple editor states
+        original_state.add_editor_state(EditorState {
+            id: "editor_1".to_string(),
+            editor_type: "sql".to_string(),
+            connection_id: Some("test_conn_1".to_string()),
+            content: "SELECT * FROM users WHERE active = true".to_string(),
+            cursor_position: CursorPosition {
+                line: 1,
+                column: 35,
+            },
+        });
+
+        original_state.add_editor_state(EditorState {
+            id: "editor_2".to_string(),
+            editor_type: "json".to_string(),
+            connection_id: None,
+            content: r#"{"test": "data"}"#.to_string(),
+            cursor_position: CursorPosition {
+                line: 1,
+                column: 15,
+            },
+        });
+
+        // Add multiple recent connections
+        original_state.update_recent_connections("test_conn_1".to_string());
+        original_state.update_recent_connections("test_conn_2".to_string());
+        original_state.update_recent_connections("test_conn_3".to_string());
+
+        // Set active workspace
+        original_state.set_active_workspace("workspace2".to_string());
+
+        // Add more query history
+        original_state.add_query_history(QueryHistoryEntry {
+            id: "query_2".to_string(),
+            query: "UPDATE users SET last_login = NOW() WHERE id = $1".to_string(),
+            connection_id: "test_conn_1".to_string(),
+            executed_at: chrono::Utc::now() - chrono::Duration::minutes(5),
+            execution_time: Some(75),
+            success: true,
+            error_message: None,
+        });
+
+        original_state.add_query_history(QueryHistoryEntry {
+            id: "query_3".to_string(),
+            query: "SELECT COUNT(*) FROM invalid_table".to_string(),
+            connection_id: "test_conn_2".to_string(),
+            executed_at: chrono::Utc::now() - chrono::Duration::minutes(10),
+            execution_time: None,
+            success: false,
+            error_message: Some("Table 'invalid_table' doesn't exist".to_string()),
+        });
+
+        // Serialize and save to file
+        let toml_content = toml::to_string_pretty(&original_state).unwrap();
+        fs::write(&state_path, toml_content).await.unwrap();
+
+        // Load the state back
+        let restored_state = ApplicationState::load_from_file(&state_path).await.unwrap();
+
+        // Verify all data was persisted and restored correctly
+
+        // Check user preferences
+        assert_eq!(restored_state.user_preferences.theme, "custom_theme");
+        assert_eq!(restored_state.user_preferences.font_size, 16);
+        assert_eq!(restored_state.user_preferences.auto_complete, false);
+
+        // Check workspace layouts
+        assert_eq!(restored_state.workspace_layouts.len(), 2);
+        assert!(restored_state.workspace_layouts.contains_key("default"));
+        assert!(restored_state.workspace_layouts.contains_key("workspace2"));
+
+        let workspace2 = restored_state.workspace_layouts.get("workspace2").unwrap();
+        assert_eq!(workspace2.window_bounds.width, 1400);
+        assert_eq!(workspace2.window_bounds.height, 900);
+        assert!(workspace2.window_bounds.maximized);
+        assert_eq!(workspace2.panel_states.len(), 2);
+        assert_eq!(workspace2.active_panes.len(), 2);
+
+        // Check panel states
+        let left_panel = workspace2.panel_states.get("left_panel").unwrap();
+        assert!(left_panel.visible);
+        assert_eq!(left_panel.width, Some(300));
+        assert!(matches!(left_panel.position, PanelPosition::Left));
+
+        let bottom_panel = workspace2.panel_states.get("bottom_panel").unwrap();
+        assert!(!bottom_panel.visible);
+        assert_eq!(bottom_panel.height, Some(200));
+        assert!(matches!(bottom_panel.position, PanelPosition::Bottom));
+
+        // Check active panes
+        let pane1 = &workspace2.active_panes[0];
+        assert_eq!(pane1.id, "pane1");
+        assert_eq!(pane1.pane_type, "query_editor");
+        assert!(pane1.active);
+        assert_eq!(pane1.data["query"], "SELECT * FROM users");
+
+        // Check session data
+        assert_eq!(
+            restored_state.session_data.last_workspace,
+            Some("workspace2".to_string())
+        );
+        assert_eq!(restored_state.session_data.open_editors.len(), 2);
+        assert_eq!(restored_state.session_data.recent_connections.len(), 3);
+        assert_eq!(restored_state.session_data.query_history.len(), 3);
+
+        // Check editor states
+        let editor1 = restored_state
+            .session_data
+            .open_editors
+            .iter()
+            .find(|e| e.id == "editor_1")
+            .unwrap();
+        assert_eq!(editor1.editor_type, "sql");
+        assert_eq!(editor1.connection_id, Some("test_conn_1".to_string()));
+        assert!(editor1.content.contains("WHERE active = true"));
+        assert_eq!(editor1.cursor_position.column, 35);
+
+        // Check recent connections order
+        assert_eq!(
+            restored_state.session_data.recent_connections[0],
+            "test_conn_3"
+        );
+        assert_eq!(
+            restored_state.session_data.recent_connections[1],
+            "test_conn_2"
+        );
+        assert_eq!(
+            restored_state.session_data.recent_connections[2],
+            "test_conn_1"
+        );
+
+        // Check query history
+        let failed_query = restored_state
+            .session_data
+            .query_history
+            .iter()
+            .find(|q| q.id == "query_3")
+            .unwrap();
+        assert!(!failed_query.success);
+        assert!(failed_query.error_message.is_some());
+        assert!(
+            failed_query
+                .error_message
+                .as_ref()
+                .unwrap()
+                .contains("doesn't exist")
+        );
+
+        // Check connection profiles
+        assert_eq!(restored_state.connection_profiles.len(), 1);
+        assert_eq!(restored_state.connection_profiles[0].id, "test_conn_1");
+
+        // Verify state integrity
+        let integrity_report = restored_state.check_integrity().unwrap();
+        assert!(
+            integrity_report.is_valid(),
+            "Restored state should be valid"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_comprehensive_corruption_recovery() {
+        // Test detailed corruption recovery and fallback mechanisms
+        // Requirement: 3.4
+
+        // Test 1: Partial corruption with recoverable data
+        let mut partially_corrupted_state = create_test_state();
+
+        // Add valid data that should be preserved
+        partially_corrupted_state.user_preferences.theme = "preserved_theme".to_string();
+        partially_corrupted_state.user_preferences.font_size = 18;
+
+        partially_corrupted_state.add_query_history(QueryHistoryEntry {
+            id: "preserved_query".to_string(),
+            query: "SELECT * FROM preserved_table".to_string(),
+            connection_id: "test_conn_1".to_string(),
+            executed_at: chrono::Utc::now(),
+            execution_time: Some(200),
+            success: true,
+            error_message: None,
+        });
+
+        // Add invalid data that should be filtered out
+        partially_corrupted_state
+            .connection_profiles
+            .push(ConnectionProfile {
+                id: "".to_string(), // Invalid empty ID
+                name: "Invalid Connection".to_string(),
+                database_type: "".to_string(), // Invalid empty type
+                host: "".to_string(),          // Invalid empty host
+                port: 0,                       // Invalid port
+                database: "testdb".to_string(),
+                username: "testuser".to_string(),
+                ssl_mode: "prefer".to_string(),
+                created_at: chrono::Utc::now(),
+                last_used: None,
+            });
+
+        partially_corrupted_state
+            .connection_profiles
+            .push(ConnectionProfile {
+                id: "valid_conn_2".to_string(),
+                name: "Valid Connection 2".to_string(),
+                database_type: "mysql".to_string(),
+                host: "mysql.example.com".to_string(),
+                port: 3306,
+                database: "mydb".to_string(),
+                username: "myuser".to_string(),
+                ssl_mode: "required".to_string(),
+                created_at: chrono::Utc::now(),
+                last_used: Some(chrono::Utc::now()),
+            });
+
+        // Add invalid query history entries
+        partially_corrupted_state
+            .session_data
+            .query_history
+            .push(QueryHistoryEntry {
+                id: "".to_string(), // Invalid empty ID
+                query: "SELECT 1".to_string(),
+                connection_id: "test_conn_1".to_string(),
+                executed_at: chrono::Utc::now(),
+                execution_time: Some(100),
+                success: true,
+                error_message: None,
+            });
+
+        partially_corrupted_state
+            .session_data
+            .query_history
+            .push(QueryHistoryEntry {
+                id: "huge_query".to_string(),
+                query: "A".repeat(2_000_000), // Exceeds size limit
+                connection_id: "test_conn_1".to_string(),
+                executed_at: chrono::Utc::now(),
+                execution_time: Some(100),
+                success: true,
+                error_message: None,
+            });
+
+        // Corrupt user preferences
+        partially_corrupted_state.user_preferences.font_size = 0; // Invalid
+        partially_corrupted_state.user_preferences.tab_size = 0; // Invalid
+        partially_corrupted_state.user_preferences.query_timeout = 0; // Invalid
+
+        // Test recovery
+        let recovered_state = partially_corrupted_state.handle_corruption().unwrap();
+
+        // Verify valid data was preserved
+        assert_eq!(
+            recovered_state.connection_profiles.len(),
+            2,
+            "Should preserve 2 valid connections"
+        );
+
+        let valid_conn_1 = recovered_state
+            .connection_profiles
+            .iter()
+            .find(|p| p.id == "test_conn_1")
+            .unwrap();
+        assert_eq!(valid_conn_1.name, "Test Connection");
+
+        let valid_conn_2 = recovered_state
+            .connection_profiles
+            .iter()
+            .find(|p| p.id == "valid_conn_2")
+            .unwrap();
+        assert_eq!(valid_conn_2.database_type, "mysql");
+        assert_eq!(valid_conn_2.port, 3306);
+
+        // Verify invalid data was filtered out and defaults applied
+        assert_eq!(
+            recovered_state.user_preferences.font_size, 14,
+            "Should use default font size"
+        );
+        assert_eq!(
+            recovered_state.user_preferences.tab_size, 4,
+            "Should use default tab size"
+        );
+        assert_eq!(
+            recovered_state.user_preferences.query_timeout, 30,
+            "Should use default timeout"
+        );
+
+        // Verify valid query history was preserved (should keep last 10 valid queries)
+        let valid_queries: Vec<_> = recovered_state
+            .session_data
+            .query_history
+            .iter()
+            .filter(|q| ApplicationState::is_valid_query_history_entry(q))
+            .collect();
+        assert!(
+            !valid_queries.is_empty(),
+            "Should preserve valid query history"
+        );
+
+        let preserved_query = valid_queries
+            .iter()
+            .find(|q| q.id == "preserved_query")
+            .unwrap();
+        assert_eq!(preserved_query.query, "SELECT * FROM preserved_table");
+
+        // Test 2: Complete corruption scenario
+        let completely_corrupted_state = ApplicationState {
+            workspace_layouts: HashMap::new(),
+            user_preferences: UserPreferences {
+                theme: "".to_string(),       // Invalid
+                font_family: "".to_string(), // Invalid
+                font_size: 0,                // Invalid
+                tab_size: 0,                 // Invalid
+                word_wrap: false,
+                show_line_numbers: true,
+                show_minimap: true,
+                auto_complete: true,
+                query_timeout: 0, // Invalid
+            },
+            session_data: SessionData {
+                last_workspace: None,
+                recent_connections: Vec::new(),
+                open_editors: Vec::new(),
+                query_history: Vec::new(),
+            },
+            connection_profiles: vec![ConnectionProfile {
+                id: "".to_string(),            // Invalid
+                name: "".to_string(),          // Invalid
+                database_type: "".to_string(), // Invalid
+                host: "".to_string(),          // Invalid
+                port: 0,                       // Invalid
+                database: "".to_string(),
+                username: "".to_string(),
+                ssl_mode: "".to_string(),
+                created_at: chrono::Utc::now(),
+                last_used: None,
+            }],
+            version: "1.0.0".to_string(),
+        };
+
+        let recovered_from_complete_corruption =
+            completely_corrupted_state.handle_corruption().unwrap();
+
+        // Should fall back to completely default state
+        assert_eq!(
+            recovered_from_complete_corruption.connection_profiles.len(),
+            0
+        );
+        assert_eq!(
+            recovered_from_complete_corruption
+                .user_preferences
+                .font_size,
+            14
+        );
+        assert_eq!(
+            recovered_from_complete_corruption.user_preferences.theme,
+            "default"
+        );
+        assert!(
+            !recovered_from_complete_corruption
+                .user_preferences
+                .font_family
+                .is_empty()
+        );
+        assert_eq!(
+            recovered_from_complete_corruption
+                .user_preferences
+                .query_timeout,
+            30
+        );
+        assert!(
+            recovered_from_complete_corruption
+                .session_data
+                .query_history
+                .is_empty()
+        );
+
+        // Verify recovered state is valid
+        let integrity_report = recovered_from_complete_corruption
+            .check_integrity()
+            .unwrap();
+        assert!(
+            integrity_report.is_valid(),
+            "Recovered state should be valid"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_state_persistence_edge_cases() {
+        // Test edge cases in state persistence and restoration
+
+        let temp_dir = TempDir::new().unwrap();
+        let state_path = temp_dir.path().join("state.toml");
+
+        // Test 1: Empty state persistence
+        let empty_state = ApplicationState::new();
+        let toml_content = toml::to_string_pretty(&empty_state).unwrap();
+        fs::write(&state_path, toml_content).await.unwrap();
+
+        let restored_empty = ApplicationState::load_from_file(&state_path).await.unwrap();
+        assert_eq!(restored_empty.connection_profiles.len(), 0);
+        assert_eq!(restored_empty.workspace_layouts.len(), 0);
+        assert_eq!(restored_empty.session_data.open_editors.len(), 0);
+
+        // Test 2: State with maximum data
+        let mut max_state = ApplicationState::new();
+
+        // Add maximum number of connections (reasonable limit)
+        for i in 0..50 {
+            max_state.add_connection_profile(ConnectionProfile {
+                id: format!("conn_{}", i),
+                name: format!("Connection {}", i),
+                database_type: if i % 2 == 0 {
+                    "postgresql".to_string()
+                } else {
+                    "mysql".to_string()
+                },
+                host: format!("host{}.example.com", i),
+                port: 5432 + (i as u16),
+                database: format!("db_{}", i),
+                username: format!("user_{}", i),
+                ssl_mode: "prefer".to_string(),
+                created_at: chrono::Utc::now() - chrono::Duration::days(i as i64),
+                last_used: if i % 3 == 0 {
+                    Some(chrono::Utc::now())
+                } else {
+                    None
+                },
+            });
+        }
+
+        // Add maximum query history (should be limited to 1000)
+        for i in 0..1200 {
+            max_state.add_query_history(QueryHistoryEntry {
+                id: format!("query_{}", i),
+                query: format!("SELECT {} FROM table_{}", i, i % 10),
+                connection_id: format!("conn_{}", i % 50),
+                executed_at: chrono::Utc::now() - chrono::Duration::minutes(i as i64),
+                execution_time: Some((i % 1000) as u64),
+                success: i % 10 != 0, // 10% failure rate
+                error_message: if i % 10 == 0 {
+                    Some(format!("Error {}", i))
+                } else {
+                    None
+                },
+            });
+        }
+
+        // Verify query history is limited
+        assert_eq!(
+            max_state.session_data.query_history.len(),
+            1000,
+            "Query history should be limited to 1000 entries"
+        );
+
+        // Add multiple workspace layouts
+        for i in 0..10 {
+            let mut panel_states = HashMap::new();
+            panel_states.insert(
+                format!("panel_{}", i),
+                PanelState {
+                    visible: i % 2 == 0,
+                    width: Some(200 + (i as u32) * 50),
+                    height: if i % 3 == 0 { Some(300) } else { None },
+                    position: match i % 4 {
+                        0 => PanelPosition::Left,
+                        1 => PanelPosition::Right,
+                        2 => PanelPosition::Top,
+                        _ => PanelPosition::Bottom,
+                    },
+                },
+            );
+
+            max_state.update_workspace_layout(WorkspaceLayout {
+                id: format!("workspace_{}", i),
+                window_bounds: WindowBounds {
+                    x: i as i32 * 100,
+                    y: i as i32 * 50,
+                    width: 800 + (i as u32) * 100,
+                    height: 600 + (i as u32) * 50,
+                    maximized: i % 3 == 0,
+                },
+                panel_states,
+                active_panes: vec![PaneInfo {
+                    id: format!("pane_{}_{}", i, 0),
+                    pane_type: "editor".to_string(),
+                    active: true,
+                    data: serde_json::json!({"content": format!("Content {}", i)}),
+                }],
+            });
+        }
+
+        // Test persistence of large state
+        let toml_content = toml::to_string_pretty(&max_state).unwrap();
+        fs::write(&state_path, toml_content).await.unwrap();
+
+        let restored_max = ApplicationState::load_from_file(&state_path).await.unwrap();
+
+        // Verify all data was preserved
+        assert_eq!(restored_max.connection_profiles.len(), 50);
+        assert_eq!(restored_max.session_data.query_history.len(), 1000);
+        assert_eq!(restored_max.workspace_layouts.len(), 10);
+
+        // Verify integrity of restored large state
+        let integrity_report = restored_max.check_integrity().unwrap();
+        assert!(
+            integrity_report.is_valid(),
+            "Large state should be valid after restoration"
+        );
+
+        // Test 3: State with special characters and unicode
+        let mut unicode_state = ApplicationState::new();
+        unicode_state.add_connection_profile(ConnectionProfile {
+            id: "unicode_conn".to_string(),
+            name: "测试连接 🚀 Тест".to_string(),
+            database_type: "postgresql".to_string(),
+            host: "localhost".to_string(),
+            port: 5432,
+            database: "测试数据库".to_string(),
+            username: "用户名".to_string(),
+            ssl_mode: "prefer".to_string(),
+            created_at: chrono::Utc::now(),
+            last_used: None,
+        });
+
+        unicode_state.add_query_history(QueryHistoryEntry {
+            id: "unicode_query".to_string(),
+            query: "SELECT '测试数据' AS test, '🎉' AS emoji, 'Тест' AS cyrillic".to_string(),
+            connection_id: "unicode_conn".to_string(),
+            executed_at: chrono::Utc::now(),
+            execution_time: Some(100),
+            success: true,
+            error_message: None,
+        });
+
+        unicode_state.user_preferences.theme = "темная_тема_🌙".to_string();
+
+        let toml_content = toml::to_string_pretty(&unicode_state).unwrap();
+        fs::write(&state_path, toml_content).await.unwrap();
+
+        let restored_unicode = ApplicationState::load_from_file(&state_path).await.unwrap();
+
+        // Verify unicode data was preserved correctly
+        assert_eq!(
+            restored_unicode.connection_profiles[0].name,
+            "测试连接 🚀 Тест"
+        );
+        assert_eq!(
+            restored_unicode.connection_profiles[0].database,
+            "测试数据库"
+        );
+        assert_eq!(
+            restored_unicode.session_data.query_history[0].query,
+            "SELECT '测试数据' AS test, '🎉' AS emoji, 'Тест' AS cyrillic"
+        );
+        assert_eq!(restored_unicode.user_preferences.theme, "темная_тема_🌙");
+
+        let integrity_report = restored_unicode.check_integrity().unwrap();
+        assert!(integrity_report.is_valid(), "Unicode state should be valid");
+    }
+
+    #[tokio::test]
+    async fn test_state_synchronization_system() {
+        // Test state synchronization across application components (simplified version)
+        // Requirement: 3.5
+        
+        let state = create_test_state();
+        
+        // Test StateChanges creation and properties
+        let workspace_changes = StateChanges::new(StateChangeType::WorkspaceLayoutChanged)
+            .with_components(vec!["workspace".to_string(), "panels".to_string()])
+            .with_persistence(true);
+        
+        assert_eq!(workspace_changes.change_type, StateChangeType::WorkspaceLayoutChanged);
+        assert_eq!(workspace_changes.affected_components.len(), 2);
+        assert!(workspace_changes.requires_persistence);
+        assert!(workspace_changes.affected_components.contains(&"workspace".to_string()));
+        assert!(workspace_changes.affected_components.contains(&"panels".to_string()));
+        
+        // Test different change types
+        let prefs_changes = StateChanges::new(StateChangeType::UserPreferencesChanged)
+            .with_components(vec!["ui".to_string(), "editor".to_string()])
+            .with_persistence(false);
+        
+        assert_eq!(prefs_changes.change_type, StateChangeType::UserPreferencesChanged);
+        assert!(!prefs_changes.requires_persistence);
+        
+        let connection_changes = StateChanges::new(StateChangeType::ConnectionAdded)
+            .with_components(vec!["connection_manager".to_string()])
+            .with_persistence(true);
+        
+        assert_eq!(connection_changes.change_type, StateChangeType::ConnectionAdded);
+        assert!(connection_changes.requires_persistence);
+        
+        // Test editor changes
+        let editor_changes = StateChanges::new(StateChangeType::EditorOpened)
+            .with_components(vec!["editor_manager".to_string(), "workspace".to_string()]);
+        
+        assert_eq!(editor_changes.change_type, StateChangeType::EditorOpened);
+        assert!(!editor_changes.requires_persistence); // Default is false
+        
+        // Test query execution changes
+        let query_changes = StateChanges::new(StateChangeType::QueryExecuted)
+            .with_components(vec!["query_engine".to_string(), "history".to_string()])
+            .with_persistence(true);
+        
+        assert_eq!(query_changes.change_type, StateChangeType::QueryExecuted);
+        assert!(query_changes.requires_persistence);
+        
+        // Test connection removal changes
+        let removal_changes = StateChanges::new(StateChangeType::ConnectionRemoved)
+            .with_components(vec!["connection_manager".to_string(), "ui".to_string()]);
+        
+        assert_eq!(removal_changes.change_type, StateChangeType::ConnectionRemoved);
+        
+        // Test synchronization with empty observers (should not fail)
+        let empty_observers: Vec<Box<dyn StateObserver>> = Vec::new();
+        let result = state.synchronize_state(workspace_changes, &empty_observers).await;
+        assert!(result.is_ok(), "Synchronization with empty observers should succeed");
+        
+        // Test that timestamps are set correctly
+        let change_with_time = StateChanges::new(StateChangeType::WorkspaceLayoutChanged);
+        let now = chrono::Utc::now();
+        assert!(change_with_time.timestamp <= now);
+        assert!(change_with_time.timestamp > now - chrono::Duration::seconds(1));
+    }
+
+    #[tokio::test]
+    async fn test_state_backup_and_recovery_comprehensive() {
+        // Test comprehensive backup and recovery functionality
+        // Requirements: 3.2, 3.4
+        
+        let temp_dir = TempDir::new().unwrap();
+        let state_path = temp_dir.path().join("state.toml");
+        let backup_path = temp_dir.path().join("state.backup.toml");
+        
+        // Create a comprehensive state for backup testing
+        let mut original_state = create_test_state();
+        
+        // Add complex data
+        original_state.user_preferences.theme = "backup_test_theme".to_string();
+        original_state.user_preferences.font_size = 20;
+        
+        // Add multiple connections
+        for i in 1..=3 {
+            original_state.add_connection_profile(ConnectionProfile {
+                id: format!("backup_conn_{}", i),
+                name: format!("Backup Connection {}", i),
+                database_type: "postgresql".to_string(),
+                host: format!("host{}.backup.com", i),
+                port: 5432 + i as u16,
+                database: format!("backup_db_{}", i),
+                username: format!("backup_user_{}", i),
+                ssl_mode: "require".to_string(),
+                created_at: chrono::Utc::now() - chrono::Duration::hours(i as i64),
+                last_used: Some(chrono::Utc::now()),
+            });
+        }
+        
+        // Add query history
+        for i in 1..=5 {
+            original_state.add_query_history(QueryHistoryEntry {
+                id: format!("backup_query_{}", i),
+                query: format!("SELECT {} FROM backup_table_{}", i, i),
+                connection_id: format!("backup_conn_{}", (i % 3) + 1),
+                executed_at: chrono::Utc::now() - chrono::Duration::minutes(i as i64 * 10),
+                execution_time: Some(i as u64 * 50),
+                success: i % 4 != 0, // Some failures
+                error_message: if i % 4 == 0 { Some(format!("Backup error {}", i)) } else { None },
+            });
+        }
+        
+        // Save original state
+        let toml_content = toml::to_string_pretty(&original_state).unwrap();
+        fs::write(&state_path, toml_content).await.unwrap();
+        
+        // Test backup creation
+        let result = original_state.create_backup().await;
+        assert!(result.is_ok(), "Backup creation should succeed");
+        
+        // Simulate state corruption by writing invalid TOML
+        let corrupted_toml = r#"
+version = "1.0.0"
+user_preferences = { theme = "corrupted", font_size = 0 }  # Invalid font size
+connection_profiles = [
+    { id = "", name = "", database_type = "", host = "", port = 0 }  # All invalid
+]
+workspace_layouts = { invalid syntax here
+"#;
+        fs::write(&state_path, corrupted_toml).await.unwrap();
+        
+        // Test loading corrupted state (should fail)
+        let load_result = ApplicationState::load_from_file(&state_path).await;
+        assert!(load_result.is_err(), "Loading corrupted state should fail");
+        
+        // Test recovery from backup (simplified - we can't easily test the full backup system without mocking paths)
+        // Instead, test the corruption recovery mechanism
+        let corrupted_state = ApplicationState {
+            workspace_layouts: HashMap::new(),
+            user_preferences: UserPreferences {
+                theme: "".to_string(), // Invalid
+                font_family: "".to_string(), // Invalid
+                font_size: 0, // Invalid
+                tab_size: 0, // Invalid
+                word_wrap: false,
+                show_line_numbers: true,
+                show_minimap: true,
+                auto_complete: true,
+                query_timeout: 0, // Invalid
+            },
+            session_data: SessionData {
+                last_workspace: None,
+                recent_connections: vec!["nonexistent_conn".to_string()], // Orphaned reference
+                open_editors: Vec::new(),
+                query_history: vec![
+                    QueryHistoryEntry {
+                        id: "valid_query".to_string(),
+                        query: "SELECT 1".to_string(),
+                        connection_id: "backup_conn_1".to_string(),
+                        executed_at: chrono::Utc::now(),
+                        execution_time: Some(100),
+                        success: true,
+                        error_message: None,
+                    },
+                    QueryHistoryEntry {
+                        id: "".to_string(), // Invalid
+                        query: "".to_string(), // Invalid
+                        connection_id: "backup_conn_1".to_string(),
+                        executed_at: chrono::Utc::now(),
+                        execution_time: Some(100),
+                        success: true,
+                        error_message: None,
+                    },
+                ],
+            },
+            connection_profiles: vec![
+                ConnectionProfile {
+                    id: "backup_conn_1".to_string(),
+                    name: "Valid Connection".to_string(),
+                    database_type: "postgresql".to_string(),
+                    host: "localhost".to_string(),
+                    port: 5432,
+                    database: "testdb".to_string(),
+                    username: "testuser".to_string(),
+                    ssl_mode: "prefer".to_string(),
+                    created_at: chrono::Utc::now(),
+                    last_used: None,
+                },
+                ConnectionProfile {
+                    id: "".to_string(), // Invalid
+                    name: "".to_string(), // Invalid
+                    database_type: "".to_string(), // Invalid
+                    host: "".to_string(), // Invalid
+                    port: 0, // Invalid
+                    database: "".to_string(),
+                    username: "".to_string(),
+                    ssl_mode: "".to_string(),
+                    created_at: chrono::Utc::now(),
+                    last_used: None,
+                },
+            ],
+            version: "1.0.0".to_string(),
+        };
+        
+        // Test corruption recovery
+        let recovered_state = corrupted_state.handle_corruption().unwrap();
+        
+        // Verify recovery preserved valid data and fixed invalid data
+        assert_eq!(recovered_state.connection_profiles.len(), 1, "Should preserve only valid connection");
+        assert_eq!(recovered_state.connection_profiles[0].id, "backup_conn_1");
+        
+        // Should use default preferences since original were invalid
+        assert_eq!(recovered_state.user_preferences.font_size, 14);
+        assert_eq!(recovered_state.user_preferences.theme, "default");
+        assert!(!recovered_state.user_preferences.font_family.is_empty());
+        assert_eq!(recovered_state.user_preferences.query_timeout, 30);
+        
+        // Should preserve valid query history
+        let valid_queries: Vec<_> = recovered_state.session_data.query_history.iter()
+            .filter(|q| ApplicationState::is_valid_query_history_entry(q))
+            .collect();
+        assert_eq!(valid_queries.len(), 1, "Should preserve only valid query");
+        assert_eq!(valid_queries[0].id, "valid_query");
+        
+        // Verify recovered state is valid
+        let integrity_report = recovered_state.check_integrity().unwrap();
+        assert!(integrity_report.is_valid(), "Recovered state should be valid");
+        
+        // Test session snapshot functionality
+        let snapshot = recovered_state.create_session_snapshot();
+        assert_eq!(snapshot.workspace_layouts.len(), recovered_state.workspace_layouts.len());
+        assert_eq!(snapshot.recent_connections.len(), recovered_state.session_data.recent_connections.len());
+        assert_eq!(snapshot.user_preferences.theme, recovered_state.user_preferences.theme);
+        
+        // Test restoring from snapshot
+        let mut new_state = ApplicationState::new();
+        let restore_result = new_state.restore_from_snapshot(snapshot).await;
+        assert!(restore_result.is_ok(), "Snapshot restoration should succeed");
+        
+        // Verify snapshot restoration
+        assert_eq!(new_state.user_preferences.theme, recovered_state.user_preferences.theme);
+        assert_eq!(new_state.connection_profiles.len(), 0); // Snapshots don't include connection profiles
     }
 }
