@@ -304,6 +304,17 @@ pub struct SettingsManager {
     _file_watcher: Option<tokio::task::JoinHandle<()>>,
 }
 
+impl std::fmt::Debug for SettingsManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SettingsManager")
+            .field("config_path", &self.config_path)
+            .field("auto_save_handle", &self.auto_save_handle.is_some())
+            .field("file_watcher", &self._file_watcher.is_some())
+            .field("subscribers_count", &self.subscribers.try_read().map(|s| s.len()).unwrap_or(0))
+            .finish()
+    }
+}
+
 /// Callback for settings changes
 pub type SettingsChangeCallback = Arc<dyn Fn(&TotthoConfig, &TotthoConfig) + Send + Sync>;
 
@@ -954,5 +965,302 @@ mod tests {
         // Test module enabled check
         assert!(!config.is_module_enabled("test_module"));
         assert!(config.is_module_enabled("non_existent_module")); // Should default to enabled
+    }
+
+    #[tokio::test]
+    async fn test_configuration_auto_reload() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("test_config.toml");
+        
+        // Create initial configuration file
+        let initial_config = TotthoConfig::default();
+        initial_config.save_to_file(&config_path).await.unwrap();
+        
+        let mut settings_manager = SettingsManager::new(config_path.clone());
+        settings_manager.initialize(initial_config).await.unwrap();
+        
+        // Set up notification tracking for auto-reload
+        let reload_detected = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reload_detected_clone = reload_detected.clone();
+        
+        let callback: SettingsChangeCallback = Arc::new(move |_previous, current| {
+            if current.logging.level == "debug" {
+                reload_detected_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+        
+        settings_manager.subscribe_to_changes(callback).await;
+        
+        // Modify configuration file externally
+        let mut modified_config = TotthoConfig::default();
+        modified_config.logging.level = "debug".to_string();
+        modified_config.save_to_file(&config_path).await.unwrap();
+        
+        // Wait for file watcher to detect change and reload
+        for _ in 0..50 { // Wait up to 5 seconds
+            sleep(Duration::from_millis(100)).await;
+            if reload_detected.load(std::sync::atomic::Ordering::SeqCst) {
+                break;
+            }
+        }
+        
+        // Verify configuration was auto-reloaded
+        let current_config = settings_manager.get_config().await;
+        assert_eq!(current_config.logging.level, "debug");
+        assert!(reload_detected.load(std::sync::atomic::Ordering::SeqCst));
+        
+        settings_manager.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_configuration_error_recovery() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("test_config.toml");
+        
+        // Test loading corrupted configuration file
+        tokio::fs::write(&config_path, "invalid toml content [[[").await.unwrap();
+        
+        let result = TotthoConfig::load_from_file(&config_path).await;
+        assert!(result.is_err());
+        
+        // Test recovery by loading defaults when file is corrupted
+        let mut settings_manager = SettingsManager::new(config_path.clone());
+        let default_config = TotthoConfig::default();
+        settings_manager.initialize(default_config.clone()).await.unwrap();
+        
+        // Verify defaults are used
+        let current_config = settings_manager.get_config().await;
+        assert_eq!(current_config.startup.restore_session, default_config.startup.restore_session);
+        assert_eq!(current_config.logging.level, default_config.logging.level);
+        
+        // Test recovery from validation errors
+        let result = settings_manager.update_config(|config| {
+            config.startup.startup_timeout_ms = 0; // Invalid value
+            Ok(())
+        }).await;
+        assert!(result.is_err());
+        
+        // Verify configuration wasn't corrupted by failed update
+        let current_config = settings_manager.get_config().await;
+        assert_ne!(current_config.startup.startup_timeout_ms, 0);
+        
+        settings_manager.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_settings_synchronization() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("test_config.toml");
+        
+        let mut settings_manager = SettingsManager::new(config_path.clone());
+        let config = TotthoConfig::default();
+        settings_manager.initialize(config).await.unwrap();
+        
+        // Test concurrent access to settings
+        let settings_manager = Arc::new(settings_manager);
+        let mut handles = Vec::new();
+        
+        // Spawn multiple tasks that update different parts of the configuration
+        for i in 0..10 {
+            let settings_manager_clone = settings_manager.clone();
+            let handle = tokio::spawn(async move {
+                let module_name = format!("module_{}", i);
+                let mut module_config = ModuleConfig::default();
+                module_config.enabled = i % 2 == 0;
+                module_config.settings.insert(
+                    "test_key".to_string(), 
+                    serde_json::Value::Number(serde_json::Number::from(i))
+                );
+                
+                settings_manager_clone.update_module_config(module_name, module_config).await
+            });
+            handles.push(handle);
+        }
+        
+        // Wait for all updates to complete
+        for handle in handles {
+            handle.await.unwrap().unwrap();
+        }
+        
+        // Verify all modules were configured correctly
+        for i in 0..10 {
+            let module_name = format!("module_{}", i);
+            let module_config = settings_manager.get_module_config(&module_name).await;
+            assert_eq!(module_config.enabled, i % 2 == 0);
+            assert_eq!(
+                module_config.settings.get("test_key"),
+                Some(&serde_json::Value::Number(serde_json::Number::from(i)))
+            );
+        }
+        
+        // Test concurrent read access
+        let mut read_handles = Vec::new();
+        for _ in 0..20 {
+            let settings_manager_clone = settings_manager.clone();
+            let handle = tokio::spawn(async move {
+                settings_manager_clone.get_config().await
+            });
+            read_handles.push(handle);
+        }
+        
+        // All reads should succeed
+        for handle in read_handles {
+            let config = handle.await.unwrap();
+            assert_eq!(config.logging.level, "info"); // Default value
+        }
+        
+        Arc::try_unwrap(settings_manager).unwrap().shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_default_value_handling() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("non_existent_config.toml");
+        
+        // Test loading configuration from non-existent file (should use defaults)
+        let loaded_config = TotthoConfig::load_from_file(&config_path).await.unwrap();
+        
+        // Verify all values are defaults
+        let default_config = TotthoConfig::default();
+        assert_eq!(loaded_config.startup.restore_session, default_config.startup.restore_session);
+        assert_eq!(loaded_config.startup.startup_timeout_ms, default_config.startup.startup_timeout_ms);
+        assert_eq!(loaded_config.logging.level, default_config.logging.level);
+        assert_eq!(loaded_config.logging.log_to_file, default_config.logging.log_to_file);
+        assert_eq!(loaded_config.workspace.default_layout, default_config.workspace.default_layout);
+        
+        // Test settings manager with default configuration
+        let mut settings_manager = SettingsManager::new(config_path.clone());
+        settings_manager.initialize(loaded_config).await.unwrap();
+        
+        // Verify defaults are properly handled in settings manager
+        let current_config = settings_manager.get_config().await;
+        assert_eq!(current_config.startup.startup_timeout_ms, default_config.startup.startup_timeout_ms);
+        assert_eq!(current_config.logging.level, default_config.logging.level);
+        
+        // Test module defaults
+        let non_existent_module = settings_manager.get_module_config("non_existent").await;
+        assert!(non_existent_module.enabled); // Should default to enabled
+        assert!(non_existent_module.settings.is_empty());
+        
+        // Test that is_module_enabled returns true for non-existent modules (default behavior)
+        assert!(settings_manager.is_module_enabled("non_existent_module").await);
+        
+        // Test creating a new config uses defaults
+        let new_config = TotthoConfig::new();
+        assert_eq!(new_config.startup.restore_session, default_config.startup.restore_session);
+        assert_eq!(new_config.logging.level, default_config.logging.level);
+        
+        settings_manager.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_configuration_persistence_edge_cases() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("nested/deep/test_config.toml");
+        
+        // Test saving to non-existent directory (should create directories)
+        let config = TotthoConfig::default();
+        config.save_to_file(&config_path).await.unwrap();
+        
+        assert!(config_path.exists());
+        assert!(config_path.parent().unwrap().exists());
+        
+        // Test loading and verifying the saved configuration
+        let loaded_config = TotthoConfig::load_from_file(&config_path).await.unwrap();
+        assert_eq!(loaded_config.startup.restore_session, config.startup.restore_session);
+        
+        // Test saving to read-only directory (should fail gracefully)
+        let readonly_dir = temp_dir.path().join("readonly");
+        tokio::fs::create_dir(&readonly_dir).await.unwrap();
+        
+        // Make directory read-only on Unix systems
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = tokio::fs::metadata(&readonly_dir).await.unwrap().permissions();
+            perms.set_mode(0o444); // Read-only
+            tokio::fs::set_permissions(&readonly_dir, perms).await.unwrap();
+            
+            let readonly_config_path = readonly_dir.join("config.toml");
+            let result = config.save_to_file(&readonly_config_path).await;
+            assert!(result.is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_settings_validation_comprehensive() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("test_config.toml");
+        
+        let mut settings_manager = SettingsManager::new(config_path.clone());
+        let config = TotthoConfig::default();
+        settings_manager.initialize(config).await.unwrap();
+        
+        // Test validation of various invalid configurations
+        let invalid_configs = vec![
+            // Invalid startup timeout
+            |config: &mut TotthoConfig| config.startup.startup_timeout_ms = 0,
+            // Invalid log level
+            |config: &mut TotthoConfig| config.logging.level = "invalid_level".to_string(),
+            // Invalid log file size
+            |config: &mut TotthoConfig| config.logging.max_file_size_mb = 0,
+            // Invalid window width
+            |config: &mut TotthoConfig| config.workspace.default_window_size.width = 100,
+            // Invalid window height
+            |config: &mut TotthoConfig| config.workspace.default_window_size.height = 100,
+        ];
+        
+        for (i, invalid_config_fn) in invalid_configs.into_iter().enumerate() {
+            let result = settings_manager.update_config(|config| {
+                invalid_config_fn(config);
+                Ok(())
+            }).await;
+            
+            assert!(result.is_err(), "Invalid config {} should have failed validation", i);
+            
+            // Verify configuration wasn't changed
+            let current_config = settings_manager.get_config().await;
+            assert!(current_config.validate().is_ok(), "Configuration should still be valid after failed update {}", i);
+        }
+        
+        // Test that validation is called during initialization
+        let mut invalid_config = TotthoConfig::default();
+        invalid_config.logging.level = "invalid".to_string();
+        
+        let result = settings_manager.update_config(|config| {
+            *config = invalid_config;
+            Ok(())
+        }).await;
+        assert!(result.is_err());
+        
+        settings_manager.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_auto_save_functionality() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("test_config.toml");
+        
+        let mut settings_manager = SettingsManager::new(config_path.clone());
+        let mut config = TotthoConfig::default();
+        config.workspace.auto_save_state = true;
+        config.workspace.auto_save_interval_sec = 1; // 1 second for testing
+        
+        settings_manager.initialize(config).await.unwrap();
+        
+        // Make a configuration change
+        settings_manager.update_config(|config| {
+            config.startup.restore_session = false;
+            Ok(())
+        }).await.unwrap();
+        
+        // Wait for auto-save to trigger (should happen within 1 second + some buffer)
+        sleep(Duration::from_millis(1500)).await;
+        
+        // Verify configuration was auto-saved by loading from file
+        let saved_config = TotthoConfig::load_from_file(&config_path).await.unwrap();
+        assert_eq!(saved_config.startup.restore_session, false);
+        
+        settings_manager.shutdown().await;
     }
 }
