@@ -4,5 +4,36 @@ version = "0.0.0"
 edition = "2024"
 
 [dependencies]
+# UI Framework
 gpui = { git = "https://github.com/zed-industries/zed.git" }
 gpui_macros = { git = "https://github.com/zed-industries/zed.git" }
+
+# Async Runtime
+tokio = { version = "1", features = ["full"] }
+
+# Error Handling
+anyhow = "1"
+thiserror = "2"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.9"
+
+# Logging and Tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Collections and Utilities
+indexmap = "2"
+cuid2 = "0.1"
+
+# Async Utilities
+futures = "0.3"
+async-trait = "0.1"
+
+# Security
+zeroize = { version = "1", features = ["derive"] }
+
+# Date and Time
+chrono = { version = "0.4", features = ["serde"] }
