@@ -1,15 +1,15 @@
 //! Event bus system for inter-module communication
-//! 
+//!
 //! Provides asynchronous event routing and handling between application modules.
 //! Implements HashMap-based channel storage for efficient event routing.
 
+use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use std::any::TypeId;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
-use tokio::sync::{RwLock, Mutex};
-use async_trait::async_trait;
-use serde::{Serialize, Deserialize};
-use tracing::{debug, trace, error, warn};
+use tokio::sync::{Mutex, RwLock};
+use tracing::{debug, error, trace, warn};
 
 use crate::core::{CoreError, Result};
 
@@ -76,7 +76,7 @@ pub trait EventHandler: Send + Sync {
 }
 
 /// Event bus for routing messages between modules
-/// 
+///
 /// Uses HashMap-based channel storage for efficient event routing and supports
 /// asynchronous message processing with batching capabilities.
 pub struct EventBus {
@@ -130,10 +130,13 @@ impl EventBus {
     pub async fn subscribe<T: Event>(&self, handler: Arc<dyn EventHandler>) -> Result<()> {
         let type_id = TypeId::of::<T>();
         let mut handlers = self.handlers.write().await;
-        
+
         // Use HashMap-based storage for efficient event routing
-        handlers.entry(type_id).or_insert_with(Vec::new).push(handler.clone());
-        
+        handlers
+            .entry(type_id)
+            .or_insert_with(Vec::new)
+            .push(handler.clone());
+
         debug!(
             "Handler '{}' subscribed to event type: {:?}",
             handler.handler_name(),
@@ -148,21 +151,27 @@ impl EventBus {
         if !*running {
             return Err(CoreError::EventBusNotRunning);
         }
+        drop(running);
 
         let type_id = TypeId::of::<T>();
-        let handlers = self.handlers.read().await;
-        
+
         // Update statistics
         {
             let mut stats = self.stats.write().await;
             stats.events_published += 1;
         }
-        
+
+        // Get handlers and release the lock before calling them
+        let event_handlers = {
+            let handlers = self.handlers.read().await;
+            handlers.get(&type_id).cloned()
+        };
+
         // Route event using HashMap-based channel storage
-        if let Some(event_handlers) = handlers.get(&type_id) {
+        if let Some(event_handlers) = event_handlers {
             let mut error_count = 0;
-            
-            for handler in event_handlers {
+
+            for handler in &event_handlers {
                 if let Err(e) = handler.handle(&event).await {
                     error_count += 1;
                     error!(
@@ -171,13 +180,13 @@ impl EventBus {
                         event.event_type(),
                         e
                     );
-                    
+
                     // Update error statistics
                     let mut stats = self.stats.write().await;
                     stats.handler_errors += 1;
                 }
             }
-            
+
             if error_count > 0 {
                 warn!(
                     "Event '{}' had {} handler errors out of {} handlers",
@@ -207,7 +216,7 @@ impl EventBus {
 
         let mut queue = self.message_queue.lock().await;
         queue.push_back(queued_event);
-        
+
         // Update queue size statistics
         {
             let mut stats = self.stats.write().await;
@@ -228,7 +237,7 @@ impl EventBus {
 
         let mut processed_count = 0;
         let mut error_count = 0;
-        
+
         loop {
             let queued_event = {
                 let mut queue = self.message_queue.lock().await;
@@ -243,12 +252,15 @@ impl EventBus {
             match self.process_queued_event(&queued_event.event).await {
                 Ok(()) => {
                     processed_count += 1;
-                    trace!("Processed queued event: {}", queued_event.event.event_type());
+                    trace!(
+                        "Processed queued event: {}",
+                        queued_event.event.event_type()
+                    );
                 }
                 Err(e) => {
                     error_count += 1;
                     queued_event.retry_count += 1;
-                    
+
                     error!(
                         "Failed to process queued event '{}' (attempt {}): {}",
                         queued_event.event.event_type(),
@@ -292,10 +304,15 @@ impl EventBus {
     /// Process a single queued event through all handlers
     async fn process_queued_event(&self, event: &Box<dyn Event>) -> Result<()> {
         let type_id = event.as_ref().type_id();
-        let handlers = self.handlers.read().await;
-        
-        if let Some(event_handlers) = handlers.get(&type_id) {
-            for handler in event_handlers {
+
+        // Get handlers and release the lock before calling them
+        let event_handlers = {
+            let handlers = self.handlers.read().await;
+            handlers.get(&type_id).cloned()
+        };
+
+        if let Some(event_handlers) = event_handlers {
+            for handler in &event_handlers {
                 if let Err(e) = handler.handle(event.as_ref()).await {
                     return Err(CoreError::EventHandlerError {
                         handler: handler.handler_name().to_string(),
@@ -312,10 +329,10 @@ impl EventBus {
     pub async fn shutdown(&self) -> Result<()> {
         let mut running = self.running.write().await;
         *running = false;
-        
+
         // Process any remaining queued events
         self.process_queue().await?;
-        
+
         tracing::debug!("Event bus shutdown");
         Ok(())
     }
@@ -359,5 +376,163 @@ impl EventBus {
 impl Default for EventBus {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    // Test event types
+    #[derive(Debug, Clone)]
+    struct TestEvent {
+        pub message: String,
+        pub id: u32,
+    }
+
+    impl Event for TestEvent {
+        fn event_type(&self) -> &'static str {
+            "test.event"
+        }
+
+        fn type_id(&self) -> TypeId {
+            TypeId::of::<TestEvent>()
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    struct AnotherTestEvent {
+        pub data: String,
+    }
+
+    impl Event for AnotherTestEvent {
+        fn event_type(&self) -> &'static str {
+            "test.another_event"
+        }
+
+        fn type_id(&self) -> TypeId {
+            TypeId::of::<AnotherTestEvent>()
+        }
+    }
+
+    // Simple test event handler that counts events without async operations
+    struct SimpleHandler {
+        name: &'static str,
+        count: Arc<AtomicU32>,
+        should_error: bool,
+    }
+
+    impl SimpleHandler {
+        fn new(name: &'static str) -> Self {
+            Self {
+                name,
+                count: Arc::new(AtomicU32::new(0)),
+                should_error: false,
+            }
+        }
+
+        fn new_with_error(name: &'static str) -> Self {
+            Self {
+                name,
+                count: Arc::new(AtomicU32::new(0)),
+                should_error: true,
+            }
+        }
+
+        fn get_count(&self) -> u32 {
+            self.count.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait]
+    impl EventHandler for SimpleHandler {
+        async fn handle(&self, _event: &dyn Event) -> Result<()> {
+            if self.should_error {
+                return Err(CoreError::Internal {
+                    reason: format!("Handler {} intentionally failed", self.name),
+                });
+            }
+
+            self.count.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn handler_name(&self) -> &'static str {
+            self.name
+        }
+    }
+
+    #[tokio::test]
+    async fn test_event_bus_not_running_errors() {
+        let event_bus = EventBus::new();
+        // Don't initialize the event bus
+
+        // Publishing should fail when not running
+        let test_event = TestEvent {
+            message: "Should fail".to_string(),
+            id: 1,
+        };
+        let result = event_bus.publish(test_event).await;
+        assert!(matches!(result, Err(CoreError::EventBusNotRunning)));
+
+        // Queueing should fail when not running
+        let test_event2 = TestEvent {
+            message: "Should also fail".to_string(),
+            id: 2,
+        };
+        let result = event_bus.queue_event(test_event2).await;
+        assert!(matches!(result, Err(CoreError::EventBusNotRunning)));
+
+        // Processing queue should fail when not running
+        let result = event_bus.process_queue().await;
+        assert!(matches!(result, Err(CoreError::EventBusNotRunning)));
+    }
+
+    #[test]
+    fn test_event_bus_creation() {
+        let event_bus = EventBus::new();
+
+        // Test that event bus can be created
+        assert_eq!(
+            std::mem::size_of_val(&event_bus),
+            std::mem::size_of::<EventBus>()
+        );
+    }
+
+    #[test]
+    fn test_core_event_types() {
+        // Test that core events implement the Event trait correctly
+        let event = CoreEvent::ModuleRegistered {
+            name: "test".to_string(),
+        };
+        assert_eq!(event.event_type(), "core.module_registered");
+
+        let event2 = CoreEvent::ShutdownRequested;
+        assert_eq!(event2.event_type(), "core.shutdown_requested");
+
+        let event3 = CoreEvent::ErrorOccurred {
+            source: "test".to_string(),
+            error: "error".to_string(),
+        };
+        assert_eq!(event3.event_type(), "core.error_occurred");
+    }
+
+    #[test]
+    fn test_event_trait_implementation() {
+        let test_event = TestEvent {
+            message: "test".to_string(),
+            id: 1,
+        };
+
+        assert_eq!(test_event.event_type(), "test.event");
+        assert_eq!(test_event.type_id(), TypeId::of::<TestEvent>());
+
+        let another_event = AnotherTestEvent {
+            data: "test".to_string(),
+        };
+
+        assert_eq!(another_event.event_type(), "test.another_event");
+        assert_eq!(another_event.type_id(), TypeId::of::<AnotherTestEvent>());
     }
 }
