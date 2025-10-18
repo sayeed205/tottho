@@ -44,6 +44,9 @@ pub enum CoreError {
     EventHandlerError { handler: String, error: String },
 
     /// State management errors
+    #[error("State error: {0}")]
+    StateError(String),
+
     #[error("State corruption detected: {reason}")]
     StateCorruption { reason: String },
 
@@ -105,6 +108,9 @@ impl CoreError {
             CoreError::ModuleInitializationFailed { module, error } => {
                 format!("Module '{}' failed to load: {}. Some features may not be available.", module, error)
             }
+            CoreError::StateError(reason) => {
+                format!("State management error: {}. Please try again.", reason)
+            }
             CoreError::StateCorruption { reason } => {
                 format!("Application settings are corrupted: {}. Settings will be reset to defaults.", reason)
             }
@@ -129,6 +135,7 @@ impl CoreError {
         match self {
             CoreError::InitializationFailed { .. } => ErrorSeverity::Critical,
             CoreError::ModuleInitializationFailed { .. } => ErrorSeverity::High,
+            CoreError::StateError(_) => ErrorSeverity::Medium,
             CoreError::StateCorruption { .. } => ErrorSeverity::High,
             CoreError::CircularDependency { .. } => ErrorSeverity::High,
             CoreError::ConfigurationError { .. } => ErrorSeverity::Medium,

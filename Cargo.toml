@@ -44,3 +44,4 @@ dirs = "6"
 [dev-dependencies]
 # Testing framework
 tokio-test = "0.4"
+tempfile = "3"
