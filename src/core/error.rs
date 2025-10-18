@@ -312,11 +312,14 @@ impl CoreError {
             CoreError::InitializationFailed { .. } => false,
             CoreError::CircularDependency { .. } => false,
             CoreError::StateCorruption { .. } => true, // Can reset to defaults
-            CoreError::ConfigurationError { .. } => true,
             CoreError::StatePersistenceFailed { .. } => true,
+            CoreError::ConfigurationError { .. } => true,
+            CoreError::ConfigurationFileNotFound { .. } => true, // Can create default config
+            CoreError::InvalidConfigurationFormat { .. } => true, // Can fix or reset config
+            CoreError::ModuleInitializationFailed { .. } => true, // Can retry or disable module
+            CoreError::EventBusNotRunning => true, // Can restart event bus
             CoreError::Timeout { .. } => true,
             CoreError::ResourceUnavailable { .. } => true,
-            CoreError::EventBusNotRunning => true,
             _ => false,
         }
     }
@@ -412,6 +415,7 @@ impl From<toml::de::Error> for CoreError {
 mod tests {
     use super::*;
     use tokio_test;
+    use crate::handle_error;
 
     #[test]
     fn test_error_categories() {
@@ -474,6 +478,12 @@ mod tests {
         assert!(!CoreError::CircularDependency { module: "test".to_string() }.is_recoverable());
         assert!(CoreError::StateCorruption { reason: "test".to_string() }.is_recoverable());
         assert!(CoreError::ConfigurationError { reason: "test".to_string() }.is_recoverable());
+        assert!(CoreError::ConfigurationFileNotFound { path: "test.toml".to_string() }.is_recoverable());
+        assert!(CoreError::ModuleInitializationFailed { 
+            module: "test".to_string(), 
+            error: "test".to_string() 
+        }.is_recoverable());
+        assert!(CoreError::EventBusNotRunning.is_recoverable());
         assert!(CoreError::Timeout { operation: "test".to_string() }.is_recoverable());
     }
 
@@ -729,6 +739,316 @@ mod tests {
 
         let error = CoreError::configuration_error("Test config error");
         assert!(matches!(error, CoreError::ConfigurationError { .. }));
+    }
+
+    // Additional comprehensive tests for task 6.3: Error handling tests
+    // Testing error capture, logging, and recovery mechanisms
+
+    #[tokio::test]
+    async fn test_error_capture_and_logging() {
+        // Test that errors are properly captured with context
+        let error = CoreError::ModuleInitializationFailed {
+            module: "test_module".to_string(),
+            error: "initialization failed".to_string(),
+        };
+        
+        let context = ErrorContext::new("module_init", "core")
+            .with_info("module_version", "1.0.0")
+            .with_info("startup_phase", "early");
+
+        // Verify error context is properly captured
+        assert_eq!(context.operation, "module_init");
+        assert_eq!(context.component, "core");
+        assert_eq!(context.additional_info.get("module_version"), Some(&"1.0.0".to_string()));
+        assert_eq!(context.additional_info.get("startup_phase"), Some(&"early".to_string()));
+
+        // Test error severity and categorization for proper logging
+        assert_eq!(error.severity(), ErrorSeverity::High);
+        assert_eq!(error.category(), ErrorCategory::Module);
+        assert!(error.requires_user_attention());
+    }
+
+    #[tokio::test]
+    async fn test_error_recovery_mechanisms() {
+        // Use the global error handler which has default strategies registered
+        let handler_arc = initialize_error_handler();
+        let handler = handler_arc.read().await;
+
+        // Test successful recovery for recoverable errors that match strategy types
+        let recoverable_errors = vec![
+            CoreError::StateCorruption { reason: "test corruption".to_string() },
+            CoreError::ModuleInitializationFailed { 
+                module: "test_module".to_string(), 
+                error: "init failed".to_string() 
+            },
+            CoreError::EventBusNotRunning,
+        ];
+
+        for error in recoverable_errors {
+            let context = ErrorContext::new("test_operation", "test_component");
+            let result = handler.handle_error(&error, context).await;
+            assert!(matches!(result, RecoveryResult::Success), 
+                "Recovery should succeed for error: {:?}", error);
+        }
+
+        // Test configuration errors that the strategy can handle
+        let config_error = CoreError::ConfigurationFileNotFound { path: "test.toml".to_string() };
+        let context = ErrorContext::new("test_operation", "test_component");
+        let result = handler.handle_error(&config_error, context).await;
+        assert!(matches!(result, RecoveryResult::Success), 
+            "Recovery should succeed for configuration error");
+
+        // Test that non-recoverable errors are handled appropriately
+        let non_recoverable_error = CoreError::InitializationFailed { 
+            reason: "critical failure".to_string() 
+        };
+        let context = ErrorContext::new("test_operation", "test_component");
+        let result = handler.handle_error(&non_recoverable_error, context).await;
+        assert!(matches!(result, RecoveryResult::Failed(_)), 
+            "Non-recoverable error should fail recovery");
+    }
+
+    #[tokio::test]
+    async fn test_error_isolation_and_stability() {
+        // Test that module errors don't crash the entire application
+        let module_errors = vec![
+            CoreError::ModuleInitializationFailed { 
+                module: "ui_module".to_string(), 
+                error: "UI init failed".to_string() 
+            },
+            CoreError::ModuleNotFound { module: "missing_module".to_string() },
+            CoreError::InvalidModuleInterface { reason: "incompatible version".to_string() },
+        ];
+
+        let handler = ErrorHandler::new();
+        
+        for error in module_errors {
+            let context = ErrorContext::new("module_management", "core");
+            
+            // Verify error is categorized as module error
+            assert_eq!(error.category(), ErrorCategory::Module);
+            
+            // Test that error handling doesn't panic or crash
+            let result = handler.handle_error(&error, context).await;
+            
+            // Should either have no strategy or fail gracefully
+            assert!(matches!(result, RecoveryResult::NoStrategy | RecoveryResult::Failed(_)));
+            
+            // Verify error provides user-friendly message
+            let user_message = error.user_message();
+            assert!(!user_message.is_empty());
+            
+            // Check that module-related errors contain appropriate messaging
+            match &error {
+                CoreError::ModuleInitializationFailed { .. } => {
+                    assert!(user_message.contains("Module") || user_message.contains("failed to load"));
+                }
+                CoreError::ModuleNotFound { .. } => {
+                    assert!(user_message.contains("unexpected error") || user_message.contains("try again"));
+                }
+                CoreError::InvalidModuleInterface { .. } => {
+                    assert!(user_message.contains("unexpected error") || user_message.contains("try again"));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_user_notification_and_error_reporting() {
+        use tokio::sync::mpsc;
+        
+        // Create notification channel
+        let (tx, mut rx) = mpsc::unbounded_channel::<ErrorNotification>();
+        
+        let mut handler = ErrorHandler::new();
+        handler.set_notification_sender(tx);
+        handler.register_recovery_strategy(ErrorCategory::State, StateRecoveryStrategy);
+
+        // Test that high-severity errors trigger user notifications
+        let critical_error = CoreError::InitializationFailed { 
+            reason: "GPUI initialization failed".to_string() 
+        };
+        let context = ErrorContext::new("app_startup", "core")
+            .with_info("startup_time", "2024-01-01T10:00:00Z");
+
+        let _result = handler.handle_error(&critical_error, context.clone()).await;
+
+        // Verify notification was sent
+        let notification = rx.try_recv().expect("Should receive error notification");
+        assert_eq!(notification.error.category(), ErrorCategory::Initialization);
+        assert_eq!(notification.context.operation, "app_startup");
+        assert_eq!(notification.context.component, "core");
+        assert!(notification.user_message.contains("Application failed to start"));
+        assert!(!notification.recovery_actions.is_empty());
+
+        // Test that low-severity errors don't trigger notifications
+        let low_severity_error = CoreError::Timeout { 
+            operation: "background_task".to_string() 
+        };
+        let context = ErrorContext::new("background_processing", "worker");
+
+        let _result = handler.handle_error(&low_severity_error, context).await;
+
+        // Should not receive notification for low-severity error
+        assert!(rx.try_recv().is_err(), "Should not receive notification for low-severity error");
+    }
+
+    #[tokio::test]
+    async fn test_error_context_preservation() {
+        // Test that error context is preserved through the handling chain
+        let error = CoreError::StatePersistenceFailed { 
+            reason: "disk full".to_string() 
+        };
+        
+        let original_context = ErrorContext::new("save_workspace", "state_manager")
+            .with_info("workspace_id", "ws_123")
+            .with_info("file_path", "/tmp/workspace.toml")
+            .with_info("disk_usage", "95%");
+
+        let handler = ErrorHandler::new();
+        let _result = handler.handle_error(&error, original_context.clone()).await;
+
+        // Verify context information is preserved
+        assert_eq!(original_context.operation, "save_workspace");
+        assert_eq!(original_context.component, "state_manager");
+        assert_eq!(original_context.additional_info.get("workspace_id"), Some(&"ws_123".to_string()));
+        assert_eq!(original_context.additional_info.get("file_path"), Some(&"/tmp/workspace.toml".to_string()));
+        assert_eq!(original_context.additional_info.get("disk_usage"), Some(&"95%".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_recovery_strategy_error_handling() {
+        // Test that recovery strategies handle errors gracefully
+        let strategy = StateRecoveryStrategy;
+        let context = ErrorContext::new("test", "test");
+
+        // Test with supported error type
+        let supported_error = CoreError::StateCorruption { reason: "test".to_string() };
+        let result = strategy.recover(&supported_error, &context).await;
+        assert!(result.is_ok(), "Should successfully recover from state corruption");
+
+        // Test with unsupported error type
+        let unsupported_error = CoreError::GpuiError { reason: "test".to_string() };
+        let result = strategy.recover(&unsupported_error, &context).await;
+        assert!(result.is_err(), "Should fail to recover from unsupported error type");
+        assert!(result.unwrap_err().contains("cannot handle this error type"));
+    }
+
+    #[tokio::test]
+    async fn test_global_error_handler_thread_safety() {
+        use std::sync::Arc;
+        use tokio::task;
+
+        // Test that global error handler can be used safely from multiple threads
+        let handler = initialize_error_handler();
+        
+        // Register a strategy to get predictable results
+        {
+            let mut handler_guard = handler.write().await;
+            handler_guard.register_recovery_strategy(ErrorCategory::State, StateRecoveryStrategy);
+        }
+
+        let handles: Vec<_> = (0..10).map(|i| {
+            task::spawn(async move {
+                // Use an error type that StateRecoveryStrategy actually handles
+                let error = CoreError::StateCorruption { reason: format!("test error {}", i) };
+                let context = ErrorContext::new(
+                    format!("operation_{}", i), 
+                    format!("component_{}", i)
+                );
+                handle_error(error, context).await
+            })
+        }).collect();
+
+        // Wait for all tasks to complete
+        for handle in handles {
+            let result = handle.await.expect("Task should complete");
+            // Should return Success since StateCorruption matches StateRecoveryStrategy
+            assert!(matches!(result, RecoveryResult::Success));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_error_macro_functionality() {
+        // Test the handle_error! macro
+        let handler = initialize_error_handler();
+        
+        // Register a strategy to get a predictable result
+        {
+            let mut handler_guard = handler.write().await;
+            handler_guard.register_recovery_strategy(ErrorCategory::Configuration, ConfigRecoveryStrategy);
+        }
+        
+        // Use an error type that the ConfigRecoveryStrategy actually handles
+        let error = CoreError::ConfigurationFileNotFound { path: "test.toml".to_string() };
+        
+        // Test basic macro usage - should succeed with registered strategy
+        let result = handle_error!(error.clone(), "test_operation", "test_component");
+        assert!(matches!(result, RecoveryResult::Success));
+
+        // Test macro with additional context
+        let result = handle_error!(
+            error, 
+            "test_operation", 
+            "test_component",
+            "config_file" => "test.toml",
+            "line_number" => "42"
+        );
+        assert!(matches!(result, RecoveryResult::Success));
+    }
+
+    #[tokio::test]
+    async fn test_error_chain_and_context_integration() {
+        // Test integration with anyhow for error chaining
+        let base_error = CoreError::Io("file not found".to_string());
+        let chained_error = base_error.with_context("Failed to load configuration");
+        
+        assert!(chained_error.to_string().contains("Failed to load configuration"));
+        // The original error message might be nested in the chain
+        let error_chain = format!("{:?}", chained_error);
+        assert!(error_chain.contains("file not found"));
+
+        // Test Result extension trait
+        let result: Result<()> = Err(CoreError::StateError("test".to_string()));
+        let anyhow_result = result.with_core_context("Operation context");
+        
+        assert!(anyhow_result.is_err());
+        let error_string = anyhow_result.unwrap_err().to_string();
+        assert!(error_string.contains("Operation context"));
+    }
+
+    #[test]
+    fn test_error_notification_completeness() {
+        // Test that error notifications contain all required information
+        let error = CoreError::ModuleInitializationFailed {
+            module: "database_module".to_string(),
+            error: "connection failed".to_string(),
+        };
+        
+        let context = ErrorContext::new("module_startup", "core")
+            .with_info("retry_count", "3")
+            .with_info("last_error", "timeout");
+        
+        let recovery_result = RecoveryResult::Failed("Recovery timeout".to_string());
+        
+        let notification = ErrorNotification {
+            error: error.clone(),
+            context: context.clone(),
+            recovery_result: recovery_result.clone(),
+            user_message: error.user_message(),
+            recovery_actions: error.recovery_actions(),
+            timestamp: chrono::Utc::now(),
+        };
+
+        // Verify all required fields are present and meaningful
+        assert_eq!(notification.error.category(), ErrorCategory::Module);
+        assert!(notification.user_message.contains("Module"));
+        assert!(!notification.recovery_actions.is_empty());
+        assert!(notification.recovery_actions.contains(&RecoveryAction::RestartApplication));
+        assert_eq!(notification.context.operation, "module_startup");
+        assert_eq!(notification.context.component, "core");
+        assert!(matches!(notification.recovery_result, RecoveryResult::Failed(_)));
     }
 }
 
