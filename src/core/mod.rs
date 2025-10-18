@@ -11,7 +11,7 @@ pub mod error;
 pub mod config;
 
 // Re-export core types for public API
-pub use app::{TotthoCore, TotthoApp};
+pub use app::{TotthoCore, TotthoApp, AppPaths};
 pub use event_bus::{EventBus, Event, EventHandler};
 pub use module_registry::{Module, ModuleRegistry, ModuleInfo, ModuleState};
 pub use state::{ApplicationState, WorkspaceLayout, UserPreferences, SessionData};

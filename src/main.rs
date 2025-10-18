@@ -3,38 +3,24 @@
 //! A powerful, offline-first database management application built with Rust and GPUI,
 //! following Zed's architectural patterns for performance and extensibility.
 
-use std::sync::Arc;
 use anyhow::Result;
-use gpui::App;
+use gpui::{App, Application};
 
 // Import core modules
 mod core;
 
-use core::{TotthoCore, TotthoApp, init_logging};
+use core::TotthoApp;
 
 fn main() -> Result<()> {
-    // Initialize logging system
-    init_logging()?;
-    
-    tracing::info!("Starting Tottho v{}", core::VERSION);
-    
-    // Create the core application instance
-    let core = Arc::new(TotthoCore::new());
-    let _app = TotthoApp::new(core.clone());
-    
-    // Initialize the core systems
-    tokio::runtime::Runtime::new()?.block_on(async {
-        if let Err(e) = core.initialize().await {
-            tracing::error!("Failed to initialize application: {}", e);
-            return Err(e.into());
-        }
+    // Create and run the GPUI application following Zed's pattern
+    Application::new().run(|cx: &mut App| {
+        tracing::info!("Starting Tottho v{}", core::VERSION);
         
-        tracing::info!("Tottho core systems initialized successfully");
-        
-        // For now, just run a simple loop to keep the application alive
-        // This will be replaced with proper GPUI integration in later tasks
-        loop {
-            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-        }
-    })
+        // For now, create a simple TotthoApp instance
+        // TODO: Implement proper async startup sequence when we understand GPUI patterns better
+        let _app = TotthoApp::new(cx);
+        tracing::info!("Tottho application created successfully");
+    });
+    
+    Ok(())
 }

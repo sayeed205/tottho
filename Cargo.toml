@@ -37,3 +37,6 @@ zeroize = { version = "1", features = ["derive"] }
 
 # Date and Time
 chrono = { version = "0.4", features = ["serde"] }
+
+# Platform directories
+dirs = "6"
