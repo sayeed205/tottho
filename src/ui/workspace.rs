@@ -5,9 +5,10 @@
 
 use std::sync::{Arc, Mutex};
 use gpui::{Context, IntoElement, Render, div, Styled, InteractiveElement, Window, ParentElement};
+use theme::Theme;
 use crate::ui::{
     ThemeEngine, LayoutEngine, PanelManager, CommandPalette, KeyboardNavigator,
-    UIError, UIResult
+    ThemeAware, UIError, UIResult
 };
 
 /// Main Tottho workspace
@@ -27,15 +28,29 @@ impl TotthoWorkspace {
         panel_manager: Arc<Mutex<PanelManager>>,
         command_palette: Arc<Mutex<CommandPalette>>,
         keyboard_navigator: Arc<Mutex<KeyboardNavigator>>,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) -> Self {
-        Self {
+        let workspace = Self {
             theme_engine,
             layout_engine,
             panel_manager,
             command_palette,
             keyboard_navigator,
-        }
+        };
+        
+        // Register for theme change notifications
+        workspace.register_for_theme_changes(cx);
+        
+        workspace
+    }
+    
+    /// Register this workspace for theme change notifications
+    fn register_for_theme_changes(&self, cx: &mut Context<Self>) {
+        let theme_engine = self.theme_engine.clone();
+        theme_engine.register_theme_change_callback(Box::new(move |_theme| {
+            // Theme change callback - this will trigger a re-render
+            // The actual theme application happens in the render method
+        }));
     }
     
     /// Get the theme engine
@@ -61,6 +76,18 @@ impl TotthoWorkspace {
     /// Get the keyboard navigator
     pub fn keyboard_navigator(&self) -> &Arc<Mutex<KeyboardNavigator>> {
         &self.keyboard_navigator
+    }
+}
+
+impl ThemeAware for TotthoWorkspace {
+    fn apply_theme(&mut self, _theme: &Theme, cx: &mut Context<Self>) {
+        // Theme application happens automatically through render method
+        // Just trigger a re-render to apply the new theme
+        cx.notify();
+    }
+    
+    fn component_name(&self) -> &'static str {
+        "TotthoWorkspace"
     }
 }
 

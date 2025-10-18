@@ -97,6 +97,16 @@ impl UIManager {
         &self.theme_engine
     }
     
+    /// Set active theme with immediate UI updates
+    pub fn set_active_theme(&self, name: &str, cx: &mut App) -> UIResult<()> {
+        self.theme_engine.set_active_theme_with_context(name, cx)
+    }
+    
+    /// Apply current theme to all components
+    pub fn apply_theme_to_all_components(&self, cx: &mut App) -> UIResult<()> {
+        self.theme_engine.apply_theme_to_components(cx)
+    }
+    
     /// Get the layout engine
     pub fn layout_engine(&self) -> &Arc<LayoutEngine> {
         &self.layout_engine

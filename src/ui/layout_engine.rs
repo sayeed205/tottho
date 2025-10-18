@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::ops::Range;
-use gpui::{App, Entity, Axis, WindowHandle, Context, EntityId, AppContext};
+use gpui::{App, Entity, Axis, WindowHandle, Context, EntityId, AppContext, Render, IntoElement, InteractiveElement, Styled, ParentElement, div};
 use serde::{Serialize, Deserialize};
 use crate::ui::{UIError, UIResult};
 
@@ -115,14 +115,18 @@ pub struct DragVisualFeedback {
     pub highlight_color: (f32, f32, f32, f32), // RGBA
 }
 
-/// Dock container
+/// Dock container with resizing and panel management
 #[derive(Debug)]
 pub struct Dock {
     pub position: DockPosition,
     pub visible: bool,
     pub size: f32,
+    pub min_size: f32,
+    pub max_size: f32,
     pub panels: Vec<String>,
     pub active_panel: Option<String>,
+    pub resizing: bool,
+    pub resize_handle_size: f32,
 }
 
 /// Layout state for persistence
@@ -995,6 +999,390 @@ impl LayoutEngine {
         } else {
             Ok(false)
         }
+    }
+    
+    // === Dock Management Methods ===
+    
+    /// Create a new dock at the specified position
+    pub fn create_dock(&mut self, position: DockPosition, cx: &mut App) -> UIResult<Entity<Dock>> {
+        if self.docks.contains_key(&position) {
+            return Err(UIError::LayoutError(
+                format!("Dock already exists at position {:?}", position)
+            ));
+        }
+        
+        let dock_entity = cx.new(|_| Dock {
+            position,
+            visible: false,
+            size: Self::get_default_dock_size(position),
+            min_size: Self::get_min_dock_size(position),
+            max_size: Self::get_max_dock_size(position),
+            panels: Vec::new(),
+            active_panel: None,
+            resizing: false,
+            resize_handle_size: 4.0, // 4px resize handle
+        });
+        
+        self.docks.insert(position, dock_entity.clone());
+        
+        // Update layout state
+        self.layout_state.dock_states.insert(position, DockState {
+            visible: false,
+            size: Self::get_default_dock_size(position),
+            active_panel: None,
+            panels: Vec::new(),
+        });
+        
+        tracing::debug!("Created dock at position {:?}", position);
+        Ok(dock_entity)
+    }
+    
+    /// Get or create a dock at the specified position
+    pub fn get_or_create_dock(&mut self, position: DockPosition, cx: &mut App) -> UIResult<Entity<Dock>> {
+        if let Some(dock) = self.docks.get(&position) {
+            Ok(dock.clone())
+        } else {
+            self.create_dock(position, cx)
+        }
+    }
+    
+    /// Show a dock
+    pub fn show_dock(&mut self, position: DockPosition, cx: &mut App) -> UIResult<()> {
+        let dock = self.get_or_create_dock(position, cx)?;
+        
+        dock.update(cx, |dock, _| {
+            dock.visible = true;
+        });
+        
+        // Update layout state
+        if let Some(dock_state) = self.layout_state.dock_states.get_mut(&position) {
+            dock_state.visible = true;
+        }
+        
+        tracing::debug!("Showed dock at position {:?}", position);
+        Ok(())
+    }
+    
+    /// Hide a dock
+    pub fn hide_dock(&mut self, position: DockPosition, cx: &mut App) -> UIResult<()> {
+        if let Some(dock) = self.docks.get(&position) {
+            dock.update(cx, |dock, _| {
+                dock.visible = false;
+            });
+            
+            // Update layout state
+            if let Some(dock_state) = self.layout_state.dock_states.get_mut(&position) {
+                dock_state.visible = false;
+            }
+            
+            tracing::debug!("Hid dock at position {:?}", position);
+        }
+        Ok(())
+    }
+    
+    /// Toggle dock visibility
+    pub fn toggle_dock_visibility(&mut self, position: DockPosition, cx: &mut App) -> UIResult<bool> {
+        let dock = self.get_or_create_dock(position, cx)?;
+        let is_visible = dock.read(cx).visible;
+        
+        if is_visible {
+            self.hide_dock(position, cx)?;
+            Ok(false)
+        } else {
+            self.show_dock(position, cx)?;
+            Ok(true)
+        }
+    }
+    
+    /// Resize a dock
+    pub fn resize_dock(&mut self, position: DockPosition, new_size: f32, cx: &mut App) -> UIResult<()> {
+        if let Some(dock) = self.docks.get(&position) {
+            dock.update(cx, |dock, _| {
+                let clamped_size = new_size.max(dock.min_size).min(dock.max_size);
+                dock.size = clamped_size;
+            });
+            
+            // Update layout state
+            if let Some(dock_state) = self.layout_state.dock_states.get_mut(&position) {
+                dock_state.size = new_size.max(Self::get_min_dock_size(position))
+                    .min(Self::get_max_dock_size(position));
+            }
+            
+            tracing::debug!("Resized dock {:?} to size {}", position, new_size);
+        }
+        Ok(())
+    }
+    
+    /// Start resizing a dock
+    pub fn start_dock_resize(&mut self, position: DockPosition, cx: &mut App) -> UIResult<()> {
+        if let Some(dock) = self.docks.get(&position) {
+            dock.update(cx, |dock, _| {
+                dock.resizing = true;
+            });
+            tracing::debug!("Started resizing dock {:?}", position);
+        }
+        Ok(())
+    }
+    
+    /// End resizing a dock
+    pub fn end_dock_resize(&mut self, position: DockPosition, cx: &mut App) -> UIResult<()> {
+        if let Some(dock) = self.docks.get(&position) {
+            dock.update(cx, |dock, _| {
+                dock.resizing = false;
+            });
+            tracing::debug!("Ended resizing dock {:?}", position);
+        }
+        Ok(())
+    }
+    
+    /// Add a panel to a dock
+    pub fn add_panel_to_dock(&mut self, position: DockPosition, panel_name: String, cx: &mut App) -> UIResult<()> {
+        let dock = self.get_or_create_dock(position, cx)?;
+        
+        dock.update(cx, |dock, _| {
+            if !dock.panels.contains(&panel_name) {
+                dock.panels.push(panel_name.clone());
+                
+                // If no active panel, make this one active
+                if dock.active_panel.is_none() {
+                    dock.active_panel = Some(panel_name.clone());
+                }
+            }
+        });
+        
+        // Update layout state
+        if let Some(dock_state) = self.layout_state.dock_states.get_mut(&position) {
+            if !dock_state.panels.contains(&panel_name) {
+                dock_state.panels.push(panel_name.clone());
+                
+                if dock_state.active_panel.is_none() {
+                    dock_state.active_panel = Some(panel_name.clone());
+                }
+            }
+        }
+        
+        tracing::debug!("Added panel '{}' to dock {:?}", panel_name, position);
+        Ok(())
+    }
+    
+    /// Remove a panel from a dock
+    pub fn remove_panel_from_dock(&mut self, position: DockPosition, panel_name: &str, cx: &mut App) -> UIResult<()> {
+        if let Some(dock) = self.docks.get(&position) {
+            dock.update(cx, |dock, _| {
+                dock.panels.retain(|p| p != panel_name);
+                
+                // If this was the active panel, activate another one
+                if dock.active_panel.as_deref() == Some(panel_name) {
+                    dock.active_panel = dock.panels.first().cloned();
+                }
+            });
+            
+            // Update layout state
+            if let Some(dock_state) = self.layout_state.dock_states.get_mut(&position) {
+                dock_state.panels.retain(|p| p != panel_name);
+                
+                if dock_state.active_panel.as_deref() == Some(panel_name) {
+                    dock_state.active_panel = dock_state.panels.first().cloned();
+                }
+            }
+            
+            tracing::debug!("Removed panel '{}' from dock {:?}", panel_name, position);
+        }
+        Ok(())
+    }
+    
+    /// Set active panel in a dock
+    pub fn set_active_panel_in_dock(&mut self, position: DockPosition, panel_name: String, cx: &mut App) -> UIResult<()> {
+        if let Some(dock) = self.docks.get(&position) {
+            let panel_exists = dock.read(cx).panels.contains(&panel_name);
+            
+            if !panel_exists {
+                return Err(UIError::PanelError(
+                    format!("Panel '{}' not found in dock {:?}", panel_name, position)
+                ));
+            }
+            
+            dock.update(cx, |dock, _| {
+                dock.active_panel = Some(panel_name.clone());
+            });
+            
+            // Update layout state
+            if let Some(dock_state) = self.layout_state.dock_states.get_mut(&position) {
+                dock_state.active_panel = Some(panel_name.clone());
+            }
+            
+            tracing::debug!("Set active panel '{}' in dock {:?}", panel_name, position);
+        }
+        Ok(())
+    }
+    
+    /// Get dock entity
+    pub fn get_dock(&self, position: DockPosition) -> Option<&Entity<Dock>> {
+        self.docks.get(&position)
+    }
+    
+    /// Check if dock is visible
+    pub fn is_dock_visible(&self, position: DockPosition, cx: &App) -> bool {
+        self.docks.get(&position)
+            .map(|dock| dock.read(cx).visible)
+            .unwrap_or(false)
+    }
+    
+    /// Get dock size
+    pub fn get_dock_size(&self, position: DockPosition, cx: &App) -> f32 {
+        self.docks.get(&position)
+            .map(|dock| dock.read(cx).size)
+            .unwrap_or(Self::get_default_dock_size(position))
+    }
+    
+    /// Get all docks
+    pub fn get_all_docks(&self) -> &HashMap<DockPosition, Entity<Dock>> {
+        &self.docks
+    }
+    
+    /// Get default dock size based on position
+    fn get_default_dock_size(position: DockPosition) -> f32 {
+        match position {
+            DockPosition::Left | DockPosition::Right => 300.0,
+            DockPosition::Bottom => 200.0,
+        }
+    }
+    
+    /// Get minimum dock size based on position
+    fn get_min_dock_size(position: DockPosition) -> f32 {
+        match position {
+            DockPosition::Left | DockPosition::Right => 150.0,
+            DockPosition::Bottom => 100.0,
+        }
+    }
+    
+    /// Get maximum dock size based on position
+    fn get_max_dock_size(position: DockPosition) -> f32 {
+        match position {
+            DockPosition::Left | DockPosition::Right => 600.0,
+            DockPosition::Bottom => 400.0,
+        }
+    }
+    
+    /// Calculate resize handle bounds for a dock
+    pub fn get_dock_resize_handle_bounds(&self, position: DockPosition, dock_bounds: (f32, f32, f32, f32), cx: &App) -> Option<(f32, f32, f32, f32)> {
+        let dock = self.docks.get(&position)?;
+        let dock_data = dock.read(cx);
+        
+        if !dock_data.visible {
+            return None;
+        }
+        
+        let (x, y, width, height) = dock_bounds;
+        let handle_size = dock_data.resize_handle_size;
+        
+        let handle_bounds = match position {
+            DockPosition::Left => (x + width - handle_size / 2.0, y, handle_size, height),
+            DockPosition::Right => (x - handle_size / 2.0, y, handle_size, height),
+            DockPosition::Bottom => (x, y - handle_size / 2.0, width, handle_size),
+        };
+        
+        Some(handle_bounds)
+    }
+    
+    /// Check if a point is within a dock's resize handle
+    pub fn is_point_in_dock_resize_handle(&self, position: DockPosition, point: (f32, f32), dock_bounds: (f32, f32, f32, f32), cx: &App) -> bool {
+        if let Some(handle_bounds) = self.get_dock_resize_handle_bounds(position, dock_bounds, cx) {
+            let (px, py) = point;
+            let (hx, hy, hw, hh) = handle_bounds;
+            px >= hx && px <= hx + hw && py >= hy && py <= hy + hh
+        } else {
+            false
+        }
+    }
+}
+
+impl Render for Dock {
+    fn render(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if !self.visible {
+            return div().id("dock-hidden").size_full();
+        }
+        
+        let dock_class = match self.position {
+            DockPosition::Left => "dock-left",
+            DockPosition::Right => "dock-right", 
+            DockPosition::Bottom => "dock-bottom",
+        };
+        
+        div()
+            .id(dock_class)
+            .size_full()
+            .child(
+                div()
+                    .id("dock-content")
+                    .size_full()
+                    .child(self.render_dock_content(cx))
+            )
+            .child(self.render_resize_handle(cx))
+    }
+}
+
+impl Dock {
+    /// Render dock content with panels
+    fn render_dock_content(&self, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .id("dock-panels")
+            .size_full()
+            .child(
+                div()
+                    .id("dock-panel-tabs")
+                    .child(self.render_panel_tabs())
+            )
+            .child(
+                div()
+                    .id("dock-panel-content")
+                    .size_full()
+                    .child(self.render_active_panel_content())
+            )
+    }
+    
+    /// Render panel tabs
+    fn render_panel_tabs(&self) -> impl IntoElement {
+        div()
+            .id("panel-tabs")
+            .children(
+                self.panels.iter().enumerate().map(|(index, panel_name)| {
+                    let is_active = self.active_panel.as_ref() == Some(panel_name);
+                    let tab_class = if is_active { "panel-tab-active" } else { "panel-tab" };
+                    
+                    div()
+                        .id(("panel-tab", index))
+                        .child(panel_name.clone())
+                })
+            )
+    }
+    
+    /// Render active panel content
+    fn render_active_panel_content(&self) -> impl IntoElement {
+        if let Some(active_panel) = &self.active_panel {
+            div()
+                .id("active-panel")
+                .size_full()
+                .child(format!("Panel: {}", active_panel))
+        } else {
+            div()
+                .id("no-active-panel")
+                .size_full()
+                .child("No active panel")
+        }
+    }
+    
+    /// Render resize handle
+    fn render_resize_handle(&self, _cx: &mut Context<Self>) -> impl IntoElement {
+        let handle_class = match self.position {
+            DockPosition::Left => "resize-handle-right",
+            DockPosition::Right => "resize-handle-left",
+            DockPosition::Bottom => "resize-handle-top",
+        };
+        
+        div()
+            .id(handle_class)
+            .child("") // Empty content, just for the resize handle
     }
 }
 
