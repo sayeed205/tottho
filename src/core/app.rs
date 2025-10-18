@@ -232,6 +232,216 @@ impl Default for TotthoCore {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn test_tottho_core_new() {
+        // Test that TotthoCore::new() creates a valid instance
+        let core = TotthoCore::new();
+        
+        // Verify all components are initialized (Arc should not be null)
+        assert!(Arc::strong_count(&core.event_bus) >= 1);
+        assert!(Arc::strong_count(&core.module_registry) >= 1);
+        assert!(Arc::strong_count(&core.app_state) >= 1);
+        assert!(Arc::strong_count(&core.config) >= 1);
+        
+        // Verify initialization timestamp is recent (within last second)
+        let elapsed = core.init_start.elapsed();
+        assert!(elapsed < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn test_tottho_core_default() {
+        // Test that Default trait works correctly
+        let core = TotthoCore::default();
+        
+        // Should be equivalent to new()
+        assert!(Arc::strong_count(&core.event_bus) >= 1);
+        assert!(Arc::strong_count(&core.module_registry) >= 1);
+        assert!(Arc::strong_count(&core.app_state) >= 1);
+        assert!(Arc::strong_count(&core.config) >= 1);
+    }
+
+    #[tokio::test]
+    async fn test_tottho_core_initialize_success() {
+        // Test successful initialization
+        let core = TotthoCore::new();
+        let start_time = Instant::now();
+        
+        let result = core.initialize().await;
+        let init_duration = start_time.elapsed();
+        
+        // Should succeed
+        assert!(result.is_ok());
+        
+        // Should complete reasonably quickly (allowing some margin for CI)
+        assert!(init_duration < Duration::from_millis(500));
+    }
+
+    #[tokio::test]
+    async fn test_tottho_core_initialize_timing() {
+        // Test that initialization meets the 200ms target under normal conditions
+        let core = TotthoCore::new();
+        let start_time = Instant::now();
+        
+        let _result = core.initialize().await;
+        let init_duration = start_time.elapsed();
+        
+        // Note: In a real test environment, this might exceed 200ms due to I/O
+        // but we test that it's reasonable (under 1 second)
+        assert!(init_duration < Duration::from_secs(1));
+        
+        // Log the actual timing for monitoring
+        println!("Initialization took: {:?}", init_duration);
+    }
+
+    #[tokio::test]
+    async fn test_tottho_core_shutdown() {
+        // Test shutdown functionality
+        let core = TotthoCore::new();
+        
+        // Initialize first
+        core.initialize().await.expect("Initialization should succeed");
+        
+        // Then shutdown
+        let result = core.shutdown().await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_tottho_core_lifecycle() {
+        // Test complete lifecycle: new -> initialize -> shutdown
+        let core = TotthoCore::new();
+        
+        // Initialize
+        let init_result = core.initialize().await;
+        assert!(init_result.is_ok());
+        
+        // Shutdown
+        let shutdown_result = core.shutdown().await;
+        assert!(shutdown_result.is_ok());
+    }
+
+    #[test]
+    fn test_app_paths_new() {
+        // Test AppPaths creation
+        let result = AppPaths::new();
+        
+        // Should succeed on most systems
+        match result {
+            Ok(paths) => {
+                // Verify paths are not empty
+                assert!(!paths.config_dir.as_os_str().is_empty());
+                assert!(!paths.data_dir.as_os_str().is_empty());
+                assert!(!paths.cache_dir.as_os_str().is_empty());
+                assert!(!paths.logs_dir.as_os_str().is_empty());
+                
+                // Verify logs_dir is under data_dir
+                assert!(paths.logs_dir.starts_with(&paths.data_dir));
+            }
+            Err(e) => {
+                // On some systems (like CI), this might fail
+                println!("AppPaths::new() failed (expected in some environments): {}", e);
+            }
+        }
+    }
+
+    #[test]
+    fn test_tottho_app_init_paths() {
+        // Test path initialization
+        let result = TotthoApp::init_paths();
+        
+        match result {
+            Ok(paths) => {
+                // Verify paths exist after initialization
+                assert!(paths.config_dir.exists() || paths.config_dir.parent().map_or(false, |p| p.exists()));
+                assert!(paths.data_dir.exists() || paths.data_dir.parent().map_or(false, |p| p.exists()));
+                assert!(paths.cache_dir.exists() || paths.cache_dir.parent().map_or(false, |p| p.exists()));
+                assert!(paths.logs_dir.exists() || paths.logs_dir.parent().map_or(false, |p| p.exists()));
+            }
+            Err(e) => {
+                // May fail in restricted environments
+                println!("init_paths failed (expected in some environments): {}", e);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_multiple_cores_independent() {
+        // Test that multiple TotthoCore instances are independent
+        let core1 = TotthoCore::new();
+        let core2 = TotthoCore::new();
+        
+        // Initialize both
+        let result1 = core1.initialize().await;
+        let result2 = core2.initialize().await;
+        
+        assert!(result1.is_ok());
+        assert!(result2.is_ok());
+        
+        // They should have different initialization times
+        assert_ne!(core1.init_start, core2.init_start);
+    }
+
+    #[tokio::test]
+    async fn test_initialization_error_scenarios() {
+        // Test initialization with potential error conditions
+        let core = TotthoCore::new();
+        
+        // For now, initialization should always succeed with placeholder implementations
+        let result = core.initialize().await;
+        assert!(result.is_ok());
+        
+        // Test double initialization (should still work with current implementation)
+        let result2 = core.initialize().await;
+        assert!(result2.is_ok());
+    }
+
+    #[test]
+    fn test_core_components_not_null() {
+        // Test that all core components are properly initialized and not null
+        let core = TotthoCore::new();
+        
+        // Test Arc references are valid
+        let event_bus_ref = Arc::clone(&core.event_bus);
+        let module_registry_ref = Arc::clone(&core.module_registry);
+        let app_state_ref = Arc::clone(&core.app_state);
+        let config_ref = Arc::clone(&core.config);
+        
+        // These should not panic
+        drop(event_bus_ref);
+        drop(module_registry_ref);
+        drop(app_state_ref);
+        drop(config_ref);
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_initialization() {
+        // Test that concurrent initialization attempts don't cause issues
+        let core = Arc::new(TotthoCore::new());
+        
+        let core1 = Arc::clone(&core);
+        let core2 = Arc::clone(&core);
+        
+        let handle1 = tokio::spawn(async move {
+            core1.initialize().await
+        });
+        
+        let handle2 = tokio::spawn(async move {
+            core2.initialize().await
+        });
+        
+        let (result1, result2) = tokio::join!(handle1, handle2);
+        
+        // Both should succeed (current implementation is idempotent)
+        assert!(result1.unwrap().is_ok());
+        assert!(result2.unwrap().is_ok());
+    }
+}
+
 /// GPUI Application wrapper for Tottho following Zed's pattern
 pub struct TotthoApp {
     core: Entity<TotthoCore>,

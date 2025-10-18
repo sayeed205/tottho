@@ -40,3 +40,7 @@ chrono = { version = "0.4", features = ["serde"] }
 
 # Platform directories
 dirs = "6"
+
+[dev-dependencies]
+# Testing framework
+tokio-test = "0.4"
