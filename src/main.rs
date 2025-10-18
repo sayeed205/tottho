@@ -11,6 +11,7 @@ use std::process;
 
 // Import core modules
 mod core;
+mod ui;
 
 use core::{TotthoApp, TotthoConfig, init_logging};
 

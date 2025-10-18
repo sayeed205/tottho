@@ -8,6 +8,18 @@ edition = "2024"
 gpui = { git = "https://github.com/zed-industries/zed.git" }
 gpui_macros = { git = "https://github.com/zed-industries/zed.git" }
 
+# Theme and UI Support
+theme = { git = "https://github.com/zed-industries/zed.git" }
+ui = { git = "https://github.com/zed-industries/zed.git" }
+picker = { git = "https://github.com/zed-industries/zed.git" }
+menu = { git = "https://github.com/zed-industries/zed.git" }
+workspace = { git = "https://github.com/zed-industries/zed.git" }
+panel = { git = "https://github.com/zed-industries/zed.git" }
+
+# Additional UI utilities
+smallvec = "1"
+lru = "0.12"
+
 # Async Runtime
 tokio = { version = "1", features = ["full"] }
 

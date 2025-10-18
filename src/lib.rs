@@ -7,6 +7,7 @@
 #![warn(clippy::all)]
 
 pub mod core;
+pub mod ui;
 
 // Re-export core types for library users
 pub use core::{
@@ -24,6 +25,14 @@ pub use core::{
 pub use core::event_bus::CoreEvent;
 pub use core::state::{ConnectionProfile, QueryHistoryEntry};
 
+// Re-export UI system types
+pub use ui::{
+    UISystem, UIManager, ThemeEngine, LayoutEngine, PanelManager, 
+    CommandPalette, KeyboardNavigator, ComponentRegistry, TotthoWorkspace,
+    UIError, UIResult, Panel, UIComponent, ThemeAware, AppearanceMode,
+    CenterLayoutMode, DockPosition, ComponentState
+};
+
 /// Prelude module for convenient imports
 pub mod prelude {
     pub use crate::core::{
@@ -31,8 +40,13 @@ pub mod prelude {
         Module, ModuleRegistry, ApplicationState, CoreError, Result,
         TotthoConfig, SettingsManager, WorkspaceManager, GlobalWorkspaceManager,
     };
+    pub use crate::ui::{
+        UISystem, UIManager, ThemeEngine, LayoutEngine, PanelManager,
+        CommandPalette, KeyboardNavigator, TotthoWorkspace, UIError, UIResult,
+        Panel, UIComponent, ThemeAware,
+    };
     pub use async_trait::async_trait;
-    pub use gpui::{App, AppContext};
+    pub use gpui::{App, AppContext, Context, IntoElement, Render};
     pub use anyhow;
     pub use tokio;
 }

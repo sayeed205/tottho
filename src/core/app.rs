@@ -489,7 +489,56 @@ impl TotthoApp {
     /// Create a new TotthoApp instance with GPUI integration
     pub fn new(cx: &mut App) -> Self {
         let core = TotthoCore::new_with_gpui(cx);
-        Self { core }
+        let app = Self { core };
+        
+        // Initialize UI system and create main window
+        if let Err(e) = app.initialize_ui_and_create_window(cx) {
+            tracing::error!("Failed to initialize UI and create window: {}", e);
+        }
+        
+        app
+    }
+    
+    /// Initialize UI system and create the main application window
+    fn initialize_ui_and_create_window(&self, cx: &mut App) -> Result<(), CoreError> {
+        use crate::ui::{UISystem, TotthoWorkspace};
+        use gpui::{WindowOptions, Bounds, Size, Point};
+        
+        tracing::info!("Initializing UI system and creating main window");
+        
+        // Initialize the UI system
+        let ui_system = UISystem::new(cx)
+            .map_err(|e| CoreError::InitializationFailed {
+                reason: format!("Failed to initialize UI system: {}", e),
+            })?;
+        
+        ui_system.initialize(cx)
+            .map_err(|e| CoreError::InitializationFailed {
+                reason: format!("Failed to initialize UI system: {}", e),
+            })?;
+        
+        // Create the main workspace
+        let workspace = ui_system.manager().create_workspace(cx)
+            .map_err(|e| CoreError::InitializationFailed {
+                reason: format!("Failed to create workspace: {}", e),
+            })?;
+        
+        // Create the main application window
+        use gpui::{WindowBounds, size, px};
+        
+        let bounds = Bounds::centered(None, size(px(1200.0), px(800.0)), cx);
+        let window_options = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            ..Default::default()
+        };
+        
+        cx.open_window(window_options, |_window, cx| workspace)
+            .map_err(|e| CoreError::InitializationFailed {
+                reason: format!("Failed to create main window: {}", e),
+            })?;
+        
+        tracing::info!("Main application window created successfully");
+        Ok(())
     }
 
     /// Initialize application paths similar to Zed's init_paths()
