@@ -1218,7 +1218,7 @@ impl ApplicationState {
             && !profile.name.is_empty()
             && !profile.host.is_empty()
             && profile.port > 0
-            && profile.port <= 65535
+
             && !profile.database_type.is_empty()
     }
 
