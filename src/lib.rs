@@ -14,7 +14,7 @@ pub use core::{
     Module, ModuleRegistry, ModuleInfo, ModuleState,
     ApplicationState, WorkspaceLayout, UserPreferences, SessionData,
     CoreError, Result,
-    TotthoConfig, StartupConfig, LoggingConfig, WorkspaceConfig,
+    TotthoConfig, StartupConfig, LoggingConfig, WorkspaceConfig, SettingsManager, SettingsChangeCallback, SettingsChangeEvent, SettingsChangeSource,
     WorkspaceManager, GlobalWorkspaceManager, Workspace, WorkspaceId,
     WindowState, PanelInfo, PanelPosition, TabInfo, TabType,
     init_logging, VERSION,
@@ -29,7 +29,7 @@ pub mod prelude {
     pub use crate::core::{
         TotthoCore, TotthoApp, EventBus, Event, EventHandler,
         Module, ModuleRegistry, ApplicationState, CoreError, Result,
-        TotthoConfig, WorkspaceManager, GlobalWorkspaceManager,
+        TotthoConfig, SettingsManager, WorkspaceManager, GlobalWorkspaceManager,
     };
     pub use async_trait::async_trait;
     pub use gpui::{App, AppContext};

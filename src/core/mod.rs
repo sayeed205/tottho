@@ -17,7 +17,7 @@ pub use event_bus::{EventBus, Event, EventHandler};
 pub use module_registry::{Module, ModuleRegistry, ModuleInfo, ModuleState};
 pub use state::{ApplicationState, WorkspaceLayout, UserPreferences, SessionData};
 pub use error::{CoreError, Result};
-pub use config::{TotthoConfig, StartupConfig, LoggingConfig, WorkspaceConfig};
+pub use config::{TotthoConfig, StartupConfig, LoggingConfig, WorkspaceConfig, SettingsManager, SettingsChangeCallback, SettingsChangeEvent, SettingsChangeSource};
 pub use workspace::{
     WorkspaceManager, GlobalWorkspaceManager, Workspace, WorkspaceId,
     WindowState, PanelInfo, PanelPosition, TabInfo, TabType

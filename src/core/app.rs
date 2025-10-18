@@ -30,7 +30,7 @@ pub struct Args {
     pub workspace: Option<PathBuf>,
 }
 
-use crate::core::{ApplicationState, CoreError, EventBus, ModuleRegistry, TotthoConfig, WorkspaceManager};
+use crate::core::{ApplicationState, CoreError, EventBus, ModuleRegistry, TotthoConfig, SettingsManager, WorkspaceManager};
 
 /// Application paths for configuration, data, cache, and logs
 #[derive(Debug, Clone)]
@@ -87,6 +87,8 @@ pub struct TotthoCore {
     pub app_state: Arc<RwLock<ApplicationState>>,
     /// Configuration management
     pub config: Arc<RwLock<TotthoConfig>>,
+    /// Settings manager for runtime configuration changes
+    pub settings_manager: Arc<RwLock<SettingsManager>>,
     /// Workspace manager for layout and session management
     pub workspace_manager: Arc<WorkspaceManager>,
     /// Initialization timestamp for performance tracking
@@ -104,6 +106,7 @@ impl TotthoCore {
             module_registry: Arc::new(RwLock::new(ModuleRegistry::new())),
             app_state: Arc::new(RwLock::new(ApplicationState::default())),
             config: Arc::new(RwLock::new(TotthoConfig::default())),
+            settings_manager: Arc::new(RwLock::new(SettingsManager::with_default_path())),
             workspace_manager: Arc::new(WorkspaceManager::new()),
             init_start,
         }
@@ -119,6 +122,7 @@ impl TotthoCore {
             module_registry: Arc::new(RwLock::new(ModuleRegistry::new())),
             app_state: Arc::new(RwLock::new(ApplicationState::default())),
             config: Arc::new(RwLock::new(TotthoConfig::default())),
+            settings_manager: Arc::new(RwLock::new(SettingsManager::with_default_path())),
             workspace_manager: Arc::new(WorkspaceManager::new()),
             init_start,
         })
@@ -131,6 +135,9 @@ impl TotthoCore {
 
         // Load configuration first
         self.load_configuration().await?;
+
+        // Initialize settings manager with current configuration
+        self.initialize_settings_manager().await?;
 
         // Initialize event bus
         self.event_bus.initialize().await?;
@@ -218,6 +225,10 @@ impl TotthoCore {
         // Save application state
         self.save_application_state().await?;
 
+        // Shutdown settings manager
+        let mut settings_manager = self.settings_manager.write().await;
+        settings_manager.shutdown().await;
+
         // Shutdown modules
         let mut registry = self.module_registry.write().await;
         registry.shutdown_all().await?;
@@ -250,6 +261,14 @@ impl TotthoCore {
     async fn initialize_module_registry(&self) -> Result<(), CoreError> {
         // TODO: Implement module registry initialization
         tracing::debug!("Module registry initialization placeholder");
+        Ok(())
+    }
+
+    async fn initialize_settings_manager(&self) -> Result<(), CoreError> {
+        let config = self.config.read().await;
+        let mut settings_manager = self.settings_manager.write().await;
+        settings_manager.initialize(config.clone()).await?;
+        tracing::debug!("Settings manager initialized");
         Ok(())
     }
 
